@@ -26,6 +26,7 @@ export const CATEGORIES = {
   reaction: { label: 'Your reaction', color: '#d946ef' },
   key: { label: 'Key moment', color: '#e5e7eb' },
   chance: { label: 'Big chance', color: '#22d3ee' },
+  meeting: { label: 'Meeting', color: '#a78bfa' },
   goalMine: { label: 'Goal (my team)', color: '#3fb950' },
   goalTheirs: { label: 'Goal (opponent)', color: '#f85149' },
   goalHome: { label: 'Goal (home)', color: '#58a6ff' },
@@ -86,6 +87,16 @@ export const SESSION_TYPES = {
     feedOnly: true,
     tags: [],
   },
+  workday: {
+    label: 'Work day',
+    short: 'Work day',
+    icon: 'cal',
+    defaultMode: 'doing',
+    clock: 'elapsed',
+    titleHint: 'Work day',
+    workday: true,
+    tags: [],
+  },
   meeting: {
     label: 'Meeting',
     short: 'Meeting',
@@ -112,6 +123,7 @@ export const DEFAULT_SETTINGS = {
   restingHr: 60,
   apiKey: '',
   model: 'claude-sonnet-5-5',
+  gcalClientId: '',
   delaySec: 60, // stream delay behind the live data feed (streams are usually 30–90 s behind)
 };
 
@@ -162,6 +174,7 @@ export const ICONS = {
   flag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 21V4M5 4h12l-2 4 2 4H5" stroke-linejoin="round"/><path d="M9 4v8M13 4v8" stroke-opacity=".5"/></svg>',
   star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z" stroke-linejoin="round"/></svg>',
   tv: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/></svg>',
+  cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 9.5h17M8 3v4M16 3v4" stroke-linecap="round"/></svg>',
   spark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>',
   heart: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.5-4.6-9.5-9.4C1.2 8.2 3.4 4.5 7 4.5c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.6 0 5.8 3.7 4.5 7.1C19.5 16.4 12 21 12 21z"/></svg>',
   home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l9-7 9 7v9h-6v-6H9v6H3z" stroke-linejoin="round"/></svg>',

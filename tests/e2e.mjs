@@ -82,7 +82,7 @@ async function mockFeeds(ctx) {
     const u = new URL(route.request().url());
     let body = { events: [] };
     if (u.pathname.endsWith('/summary')) body = summary();
-    else if (u.pathname.includes('/uefa.champions/scoreboard')) body = { leagues: [{ name: 'UEFA Champions League' }], events: [scoreboardEvent('777', new Date(T0).toISOString(), 'in', "30'", 1, 0)] };
+    else if (u.pathname.includes('/uefa.champions/scoreboard')) body = { leagues: [{ name: 'UEFA Champions League' }], events: [scoreboardEvent('777', new Date(T0).toISOString(), 'in', "30'", 1, 0), { ...scoreboardEvent('779', new Date(T0 - 3 * 3600e3).toISOString(), 'post', 'FT', 2, 2), id: '779' }] };
     else if (u.pathname.includes('/por.1/scoreboard')) body = { leagues: [{ name: 'Liga Portugal' }], events: [{ ...scoreboardEvent('778', '2026-11-29T20:30Z', 'pre', 'Sun 8:30 PM', 0, 0), competitions: [{ status: { type: { state: 'pre' } }, competitors: [team('2250', 'Sporting CP', 'Sporting CP', 'home', 0), team('437', 'FC Porto', 'FC Porto', 'away', 0)] }] }] };
     else if (u.pathname.endsWith('/teams')) body = { sports: [{ leagues: [{ teams: [{ team: { id: '1929', displayName: 'Benfica', logos: [] } }, { team: { id: '437', displayName: 'FC Porto', logos: [] } }] }] }] };
     await route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
@@ -143,6 +143,7 @@ try {
   check('"Your teams & driver" group', (await page.locator('.subhead', { hasText: 'Your teams' }).count()) === 1);
   check('my team highlighted', (await page.locator('.fx-row.mine').first().innerText()).includes('Sporting'));
   check('F1 race listed', (await page.locator('.fx', { hasText: 'Qatar Grand Prix' }).count()) === 1);
+  check('finished games are not on Home', (await page.locator('.fx .when', { hasText: 'FT' }).count()) === 0);
   check('upcoming Clássico listed', (await page.locator('.fx', { hasText: 'FC Porto' }).count()) === 1);
   await page.screenshot({ path: 'tests/screens/01-home-phone.png', fullPage: true });
 
@@ -247,15 +248,25 @@ try {
 
   /* ---------- 2. Following ---------- */
   await page.goto(BASE + '#/following');
-  check('default follows', (await page.locator('.fchip').count()) === 3 && (await page.locator('.fchip').first().innerText()).includes('Sporting CP'));
+  check('default follows', (await page.locator('#teamChips .fchip').count()) === 3 && (await page.locator('#teamChips .fchip').first().innerText()).includes('Sporting CP'));
   check('competitions on', await page.isChecked('[data-comp="uefa.champions"]') && await page.isChecked('[data-comp="eng.1"]') && await page.isChecked('[data-comp="por.1"]'));
   await page.focus('#teamSearch');
   await page.waitForFunction(() => !document.querySelector('#teamResults .spinner'));
   await page.fill('#teamSearch', 'benf');
   await page.click('[data-addteam="1929"]');
-  check('team added', (await page.locator('.fchip').count()) === 4);
+  check('team added', (await page.locator('#teamChips .fchip').count()) === 4);
   await page.waitForFunction(() => document.querySelectorAll('#driverSel option').length > 1);
-  check('driver select defaults to Max', (await page.locator('#driverSel').inputValue()) === 'VERSTAPPEN');
+  check('Max followed by default', (await page.locator('[data-rmdriver="VERSTAPPEN"]').count()) === 1);
+  await page.selectOption('#driverSel', 'NORRIS');
+  await page.waitForSelector('[data-rmdriver="NORRIS"]');
+  check('second driver added', (await page.locator('[data-rmdriver]').count()) === 2);
+  await page.goto(BASE);
+  await page.locator('.fx', { hasText: 'Qatar Grand Prix' }).locator('[data-watch]').click();
+  await page.waitForSelector('#wMine');
+  check('watch sheet lets me pick whose race it is', (await page.locator('#wMine button').count()) === 2);
+  await page.click('#wCancel');
+  await page.goto(BASE + '#/following');
+  await page.waitForSelector('[data-rmdriver="NORRIS"]');
   await page.screenshot({ path: 'tests/screens/07-following-phone.png', fullPage: true });
 
   /* ---------- 3. Watching a live match: auto moments + TV-delay sync ---------- */
@@ -426,6 +437,64 @@ try {
   await lp.waitForSelector('#meetSummary');
   await lp.waitForFunction(() => /meetings · highest \+25/.test(document.querySelector('#meetSummary').textContent));
   check('home meeting-stress card summary', true);
+
+  /* ---------- 4b. Work day: Google Calendar + all-day recording → every meeting scored ---------- */
+  const wctx = await newPhone();
+  await wctx.addInitScript(() => {
+    window.google = { accounts: { oauth2: {
+      initTokenClient: (cfg) => ({ requestAccessToken: () => setTimeout(() => cfg.callback({ access_token: 'test-token', expires_in: 3600 }), 10) }),
+      revoke: () => {},
+    } } };
+  });
+  const W0 = Date.parse('2026-11-25T09:00:00Z');
+  const calItems = [
+    { id: 'ev1', summary: 'Weekly sync', start: { dateTime: new Date(W0 + 30 * 60000).toISOString() }, end: { dateTime: new Date(W0 + 60 * 60000).toISOString() }, attendees: [{ email: 'me@x.com', self: true }, { email: 'sam.lee@x.com' }] },
+    { id: 'ev2', summary: 'Budget review', start: { dateTime: new Date(W0 + 120 * 60000).toISOString() }, end: { dateTime: new Date(W0 + 165 * 60000).toISOString() }, attendees: [{ email: 'me@x.com', self: true }, { email: 'm@x.com', displayName: 'Marco' }, { email: 'p@x.com', displayName: 'Priya' }] },
+  ];
+  let calAuth = null;
+  await wctx.route('https://www.googleapis.com/calendar/v3/**', async (route) => {
+    calAuth = route.request().headers().authorization;
+    await route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ items: calItems }) });
+  });
+  const wp = await wctx.newPage();
+  watch(wp);
+  await wp.clock.install({ time: new Date(W0) });
+  await wp.goto(BASE + '#/settings');
+  await wp.fill('#sGcal', 'test-client.apps.googleusercontent.com');
+  await wp.click('#sGcalGo');
+  await wp.waitForFunction(() => /Connected\. 2 meetings/.test(document.querySelector('#sGcalStatus').textContent));
+  check('Google Calendar connects with a bearer token', calAuth === 'Bearer test-token');
+  await wp.click('#sSave');
+  await wp.goto(BASE + '#/meetings');
+  await wp.click('#strapChip').catch(() => {});
+  await wp.evaluate(() => window.__pulse.strap.pick());
+  await wp.clock.runFor(2000);
+  await wp.click('#mWorkday');
+  await wp.waitForSelector('.wdlist li');
+  check("today's meetings listed live", (await wp.locator('.wdlist li').count()) === 2);
+  // heart rate: calm 70, +3 in the sync, +16 in the budget review
+  const phases = [[30, 70], [30, 73], [60, 70], [45, 86], [60, 70]];
+  for (const [mins, hr] of phases) {
+    await wp.evaluate((h) => (window.__fakeHR.hr = h), hr);
+    await wp.clock.runFor(mins * 60000);
+  }
+  check('current/done meetings marked', (await wp.locator('.wdlist li.done').count()) === 2);
+  await wp.screenshot({ path: 'tests/screens/15-workday-live.png', fullPage: true });
+  await wp.click('#endBtn');
+  await wp.click('#endBtn');
+  await wp.waitForSelector('#eSave');
+  await wp.click('#eSave');
+  await wp.waitForSelector('.mbars li');
+  const board = await wp.locator('.mbars').innerText();
+  check('both calendar meetings scored automatically', board.includes('Budget review') && board.includes('Weekly sync'));
+  const top = parseFloat(await wp.locator('.mb-val').first().innerText());
+  check(`Budget review ≈ +16 bpm vs the ±90-min baseline (${top})`, (await wp.locator('.mb-title').first().innerText()) === 'Budget review' && top > 13 && top < 18);
+  check('attendees from the invite', board.includes('Marco, Priya') && board.includes('Sam Lee'));
+  await wp.locator('.mbars li a', { hasText: 'Budget review' }).click();
+  await wp.waitForSelector('#dHero img');
+  check('calendar meeting page: baseline method explained', (await wp.locator('.meetstat').innerText()).includes('90 min around it'));
+  check('story line in the reference format', (await wp.locator('#dHero img').getAttribute('alt')).startsWith('Budget review with Marco, Priya (your clock, started'));
+  await wp.screenshot({ path: 'tests/screens/16-calendar-meeting.png', fullPage: true });
 
   /* ---------- 5. Desktop widths ---------- */
   const dctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });

@@ -204,7 +204,9 @@ export function tensionSeries(session, restingHr, { stepMs = 30 * SEC, windowMs 
 export function allBands(session, now) {
   const bands = (session.bands || []).map((b) => ({ ...b, end: b.end || now || sessionEnd(session) }));
   const p = session.phases || {};
-  if (p.meetingStart && p.meetingStart > session.startTs) {
+  if (session.calendarEvent) {
+    bands.push({ key: 'meeting', label: session.title, color: '#a78bfa', start: session.calendarEvent.start, end: session.calendarEvent.end });
+  } else if (p.meetingStart && p.meetingStart > session.startTs) {
     bands.push({ key: 'baseline', label: 'Baseline', color: '#8b93a3', start: session.startTs, end: p.meetingStart });
   }
   if (p.halftime) {
@@ -224,7 +226,7 @@ export function phaseLines(session) {
   const p = session.phases || {};
   const lines = [];
   if (p.kickoff) lines.push({ t: p.kickoff, label: 'KO' });
-  if (p.meetingStart) lines.push({ t: p.meetingStart, label: 'START' });
+  if (p.meetingStart && !session.calendarEvent) lines.push({ t: p.meetingStart, label: 'START' });
   if (p.fulltime) lines.push({ t: p.fulltime, label: 'FT' });
   return lines;
 }
@@ -506,7 +508,7 @@ export function detectReactions(session, restingHr) {
     }
     cands.push({ t: b[k].t - 15000, peakT: b[i].t, bpm: b[i].max || Math.round(v), rise });
   }
-  const feedTimes = (session.tags || []).filter((g) => g.auto && g.cat !== 'reaction').map((g) => g.t);
+  const feedTimes = (session.tags || []).filter((g) => g.cat !== 'reaction').map((g) => g.t);
   const picked = [];
   for (const c of cands.sort((x, y) => y.rise - x.rise)) {
     if (picked.some((p) => Math.abs(p.t - c.t) < 5 * 60000)) continue;
@@ -610,6 +612,20 @@ const median = (arr) => {
  * else your usual desk baseline from other meetings, else resting HR + 8.
  */
 export function meetingStress(session, restingHr, deskBaseline = null) {
+  if (session.calScore) {
+    const c = session.calScore;
+    return {
+      elevation: c.dbpm,
+      baseline: c.baseline,
+      baselineSource: 'day',
+      avgHr: c.avgHr,
+      peakHr: c.peakHr,
+      durationMin: c.minutes,
+      z: c.z,
+      elevatedShare: c.elevatedShare,
+      manual: false,
+    };
+  }
   if (session.manual) {
     const m = session.manual;
     const base = m.baselineHr || deskBaseline || restingHr + 8;
@@ -712,4 +728,134 @@ export function peopleEffects(rows, lambda = 2) {
       };
     })
     .sort((a, b) => b.effect - a.effect);
+}
+
+/* ---------------- Work day: score every calendar meeting against all-day heart rate ---------------- */
+
+/** Per-minute average HR: Map(minuteIndex → bpm) where minuteIndex = floor(t / 60000). */
+export function minuteSeries(samples) {
+  const acc = new Map();
+  for (const s of samples) {
+    const m = Math.floor(s.t / 60000);
+    const a = acc.get(m) || [0, 0];
+    a[0] += s.hr;
+    a[1] += 1;
+    acc.set(m, a);
+  }
+  const out = new Map();
+  for (const [m, [sum, n]] of acc) if (n >= 10) out.set(m, sum / n);
+  return out;
+}
+
+/**
+ * Score calendar meetings against a long recording (method of the WHOOP "stress leaderboard"):
+ * baseline = minutes within ±90 min of the meeting that are not in ANY meeting (≥ 30 needed);
+ * the meeting needs heart rate for ≥ 50 % of its minutes.
+ * Returns [{ event, dbpm, baseline, baseStd, z, elevatedShare, coverage, avgHr, peakHr, minutes }]
+ */
+export function scoreDayMeetings(samples, events, { baselineMinutes = 90, minBaseline = 30, minCoverage = 0.5 } = {}) {
+  const hr = minuteSeries(samples);
+  const busy = new Set();
+  for (const e of events) for (let m = Math.floor(e.start / 60000); m < Math.ceil(e.end / 60000); m++) busy.add(m);
+  const stats = (vals) => {
+    const n = vals.length;
+    const mean = vals.reduce((a, v) => a + v, 0) / n;
+    return { mean, std: Math.sqrt(vals.reduce((a, v) => a + (v - mean) ** 2, 0) / n) };
+  };
+  const out = [];
+  for (const e of events) {
+    const lo = Math.floor(e.start / 60000);
+    const hi = Math.ceil(e.end / 60000) - 1;
+    const mins = hi - lo + 1;
+    const inMeeting = [];
+    for (let m = lo; m <= hi; m++) if (hr.has(m)) inMeeting.push(hr.get(m));
+    if (inMeeting.length < Math.max(1, minCoverage * mins)) continue;
+    const base = [];
+    for (let m = lo - baselineMinutes; m < lo; m++) if (!busy.has(m) && hr.has(m)) base.push(hr.get(m));
+    for (let m = hi + 1; m <= hi + baselineMinutes; m++) if (!busy.has(m) && hr.has(m)) base.push(hr.get(m));
+    if (base.length < minBaseline) continue;
+    const b = stats(base);
+    const mm = stats(inMeeting);
+    const dbpm = mm.mean - b.mean;
+    const thresh = b.mean + 0.5 * b.std;
+    out.push({
+      event: e,
+      dbpm: Math.round(dbpm * 10) / 10,
+      baseline: Math.round(b.mean),
+      baseStd: Math.round(b.std * 10) / 10,
+      z: b.std > 1e-9 ? Math.round((dbpm / b.std) * 100) / 100 : 0,
+      elevatedShare: Math.round((inMeeting.filter((v) => v > thresh).length / inMeeting.length) * 100) / 100,
+      coverage: Math.round((inMeeting.length / mins) * 100) / 100,
+      avgHr: Math.round(mm.mean),
+      peakHr: Math.round(Math.max(...inMeeting)),
+      minutes: mins,
+    });
+  }
+  return out.sort((a, b) => b.dbpm - a.dbpm);
+}
+
+/* ---------------- One pipeline for every session type ---------------- */
+
+/**
+ * Build the numbered moments for any session, the same way:
+ *  - football / F1: live-data moments (applyFeed)
+ *  - meetings / other matches: your tagged moments
+ *  - work days: one moment per calendar meeting
+ *  + "Your reaction" moments from unexplained heart-rate spikes, for everything
+ *  + AI captions (session.ai) replace the plain labels wherever present.
+ */
+export function applyAuto(session, restingHr, now = Date.now()) {
+  const ai = session.ai || {};
+  const other = ai.other || {};
+  if (session.feed) {
+    applyFeed(session, now);
+    session.reactions = detectReactions(session, restingHr);
+    applyFeed(session, now);
+    for (const g of session.tags) if (!g.auto && other[g.id]) g.label = other[g.id];
+    return session;
+  }
+  const manual = (session.tags || [])
+    .filter((g) => !g.auto)
+    .map((g) => {
+      const base = g.baseLabel || g.label;
+      return { ...g, baseLabel: base, label: other[g.id] || base };
+    });
+  const meetings = [];
+  if (session.type === 'workday') {
+    const end = session.endTs || now;
+    for (const e of session.calEvents || []) {
+      if (e.start > end) continue;
+      const id = 'w:' + e.id;
+      const who = e.attendees && e.attendees.length ? `: ${e.attendees.slice(0, 3).join(', ')}${e.attendees.length > 3 ? ` +${e.attendees.length - 3}` : ''}` : '';
+      const base = `${e.title}${who}`;
+      meetings.push({ id, t: e.start, auto: true, est: false, cat: 'meeting', label: other[id] || base, baseLabel: base, color: CATEGORIES.meeting.color, catLabel: 'Meeting' });
+    }
+  }
+  if (session.type === 'meeting') {
+    const st = (session.calendarEvent && session.calendarEvent.start) || (session.phases && session.phases.meetingStart);
+    const en = (session.calendarEvent && session.calendarEvent.end) || (st ? session.endTs : null);
+    const who = (session.attendees || []).length ? ` with ${session.attendees.slice(0, 3).join(', ')}${session.attendees.length > 3 ? ` +${session.attendees.length - 3}` : ''}` : '';
+    const key = (id, t, base) => ({ id, t, auto: true, est: false, cat: 'key', label: other[id] || base, baseLabel: base, color: CATEGORIES.key.color, catLabel: 'Key moment' });
+    if (st) meetings.push(key('s:start', st, `${session.title} starts${who}`));
+    if (en && en > (st || 0) + 60000) meetings.push(key('s:end', en, 'Meeting ends'));
+  }
+  session.tags = [...manual, ...meetings];
+  const ar = ai.reactions || {};
+  session.reactions = detectReactions(session, restingHr);
+  session.tags = [
+    ...session.tags,
+    ...session.reactions.map((r) => ({
+      id: 'r:' + r.key,
+      rkey: r.key,
+      t: r.t,
+      auto: true,
+      est: false,
+      cat: 'reaction',
+      label: ar[r.key] || r.label,
+      baseLabel: r.label,
+      color: CATEGORIES.reaction.color,
+      catLabel: 'Your reaction',
+    })),
+  ];
+  return session;
 }

@@ -7,7 +7,9 @@ Pulse records your live heart rate from a WHOOP strap (via **Heart Rate Broadcas
 ![Example export](docs/example-export.png)
 
 ## Following & automatic moments
-- **Following tab**: your teams (default Sporting CP, Manchester United, Portugal), "every game in" competitions (default Liga Portugal, Premier League, Champions League, Europa League; more available), and your F1 driver (default Max Verstappen).
+- **Following tab**: your teams (default Sporting CP, Manchester United, Portugal), "every game in" competitions (default Liga Portugal, Premier League, Champions League, Europa League; more available), and any number of F1 drivers (default Max Verstappen). When you watch a race you pick whose race it is.
+- **Home** shows only live and upcoming games; finished ones drop off.
+- **Same format everywhere**: football, F1, meetings and work days all use the reference chart: numbered moments, shaded bands (safety car, half-time, speaking, meetings), the category key, the story line "… (your clock, …)", heart-rate "Your reaction" moments and AI-written captions.
 - **Home** lists what's live now and coming up in the next 9 days. Tap **Watch** at any time.
 - **Football (ESPN live data)**: goals with the running score and scorer, red cards, missed or saved penalties, VAR decisions, shots off the woodwork, kick-off, half-time and full time, all with their real-world times.
 - **F1 (OpenF1)**: lights out, lead changes (grouped, e.g. "Laps 10 to 18: lead swaps back and forth between Max and Russell"), your driver's pit stops, safety car / VSC / red-flag bands, and the result. OpenF1 may publish timing only after the race; Pulse then fills in the moments when you save or open the session.
@@ -28,6 +30,35 @@ Inspired by the WHOOP "stress leaderboard" project: see which meetings, and whic
 - Caveat shown in the app: a higher heart rate is not proof someone causes stress; topic, deadlines, sleep, caffeine or presenting all play a part.
 
 ![Meeting stress board](docs/example-meetings.png)
+
+## Work day mode + Google Calendar (every meeting scored automatically)
+WHOOP's official API has no minute-by-minute heart rate, and a phone browser can't call it at all. So Pulse records your all-day heart rate itself, over Bluetooth, and lines it up with your calendar:
+1. Connect Google Calendar once (below).
+2. In the morning: **Meeting stress → Start work day**. Leave the phone on its charger with Pulse open; the screen stays on.
+3. Today's meetings show live, with the current one highlighted.
+4. **End work day**: every meeting with heart rate for at least half its length is scored against your heart rate in the 90 minutes around it, outside other meetings. That's the same method as the WHOOP "stress leaderboard" project. Attendees come from the invite and feed the people leaderboard.
+
+When you record a single meeting, Pulse offers the meetings happening now from your calendar to fill in the title and people.
+
+### Google Calendar setup
+Takes about 5 minutes, once, on a computer:
+1. Open https://console.cloud.google.com, sign in with the Google account that has your work calendar, and create a project called **Pulse**.
+2. **APIs & Services → Library**: search **Google Calendar API** and click **Enable**.
+3. **APIs & Services → OAuth consent screen**:
+   - choose **External** (or **Internal** for a Google Workspace account);
+   - app name **Pulse**, with your email as support and developer contact;
+   - under **Scopes**, add `.../auth/calendar.events.readonly`;
+   - under **Test users**, add your own Google account.
+4. **APIs & Services → Credentials → Create credentials → OAuth client ID**:
+   - application type **Web application**;
+   - under **Authorised JavaScript origins**, add `https://joelmadeira26.github.io`;
+   - click **Create** and copy the **Client ID**.
+5. In Pulse: **Settings → Google Calendar**: paste the client ID, tap **Connect Google Calendar**, sign in and allow.
+
+Notes:
+- Access is read-only and goes straight from Google to your phone.
+- Google sign-ins last an hour. When one expires, Pulse asks you to tap **Connect** again.
+- On a company Google Workspace account, your admin may need to allow the app.
 
 ## Features
 - **Live**: big BPM, session clock (football match minute: 1'–45', 45+x', HT, 46'–90', 90+x', FT), live chart, thumb-sized tag buttons, free-text tags, Undo, and End (tap twice to confirm).

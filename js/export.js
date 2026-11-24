@@ -37,7 +37,17 @@ export function storyLine(session) {
   if (session.teams) {
     const ko = session.phases && session.phases.kickoff;
     const comp = ev && ev.competition ? `, ${ev.competition}` : '';
-    return `${displayTitle(session)}${comp} (your clock${ko ? `, kick-off ${clockTime(ko)}` : ''})`;
+    const mine = session.teams.mine ? `${session.teams[session.teams.mine]}'s match, ` : '';
+    return `${mine}${displayTitle(session)}${comp} (your clock${ko ? `, kick-off ${clockTime(ko)}` : ''})`;
+  }
+  if (session.type === 'workday') {
+    const n = (session.calEvents || []).length;
+    return `Your work day, ${n} meeting${n === 1 ? '' : 's'} (your clock, ${clockTime(session.startTs)}–${clockTime(sessionEnd(session))})`;
+  }
+  if (session.type === 'meeting') {
+    const who = (session.attendees || []).length ? ` with ${session.attendees.slice(0, 3).join(', ')}${session.attendees.length > 3 ? ` +${session.attendees.length - 3}` : ''}` : '';
+    const st = (session.calendarEvent && session.calendarEvent.start) || (session.phases && session.phases.meetingStart);
+    return `${session.title}${who} (your clock${st ? `, started ${clockTime(st)}` : ''})`;
   }
   return `${session.title} · ${typeOf(session.type).label} (your clock)`;
 }

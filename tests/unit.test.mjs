@@ -516,3 +516,45 @@ test('people effects separate who drives the elevation (ridge regression)', () =
   assert.ok(eff[0].effect > 2 && eff.at(-1).effect < 0);
   assert.deepEqual(peopleEffects([]), []);
 });
+
+/* ---------- Google Calendar + work-day scoring ---------- */
+import { normalizeEvents } from '../js/gcal.js';
+import { scoreDayMeetings } from '../js/analysis.js';
+
+test('Google events → meetings (skips all-day, declined, focus time; names from attendees)', () => {
+  const ev = normalizeEvents([
+    { id: 'a', summary: 'Budget review', start: { dateTime: '2026-11-25T10:00:00Z' }, end: { dateTime: '2026-11-25T10:45:00Z' },
+      attendees: [{ email: 'me@x.com', self: true, responseStatus: 'accepted' }, { email: 'marco.rossi@x.com' }, { email: 'p@x.com', displayName: 'Priya N' }, { email: 'room@resource.calendar.google.com', resource: true }] },
+    { id: 'b', summary: 'Offsite', start: { date: '2026-11-25' }, end: { date: '2026-11-26' } },
+    { id: 'c', summary: 'Declined', start: { dateTime: '2026-11-25T12:00:00Z' }, end: { dateTime: '2026-11-25T12:30:00Z' }, attendees: [{ self: true, responseStatus: 'declined' }] },
+    { id: 'd', summary: 'Focus', eventType: 'focusTime', start: { dateTime: '2026-11-25T13:00:00Z' }, end: { dateTime: '2026-11-25T15:00:00Z' } },
+    { id: 'e', status: 'cancelled', start: { dateTime: '2026-11-25T16:00:00Z' }, end: { dateTime: '2026-11-25T16:30:00Z' } },
+  ]);
+  assert.equal(ev.length, 1);
+  assert.equal(ev[0].title, 'Budget review');
+  assert.deepEqual(ev[0].attendees, ['Marco Rossi', 'Priya N']);
+});
+
+test('work day: meetings scored against ±90 min non-meeting baseline', () => {
+  const t0 = Date.parse('2026-11-25T08:00:00Z');
+  const events = [
+    { id: 'm1', title: 'Calm sync', start: t0 + 120 * 60000, end: t0 + 150 * 60000, attendees: ['Sam'] },
+    { id: 'm2', title: 'Budget review', start: t0 + 240 * 60000, end: t0 + 285 * 60000, attendees: ['Marco'] },
+    { id: 'm3', title: 'Not recorded', start: t0 + 600 * 60000, end: t0 + 630 * 60000, attendees: [] },
+  ];
+  const samples = [];
+  for (let i = 0; i < 8 * 3600; i++) {
+    const t = t0 + i * 1000;
+    let hr = 70 + (i % 7) - 3;
+    if (t >= events[0].start && t < events[0].end) hr += 2;
+    if (t >= events[1].start && t < events[1].end) hr += 14;
+    samples.push({ t, hr });
+  }
+  const r = scoreDayMeetings(samples, events);
+  assert.equal(r.length, 2, 'meeting without heart-rate coverage is skipped');
+  assert.equal(r[0].event.title, 'Budget review');
+  assert.ok(Math.abs(r[0].dbpm - 14) < 0.6, `dbpm ${r[0].dbpm}`);
+  assert.ok(r[0].z > 3 && r[0].elevatedShare > 0.9);
+  assert.ok(Math.abs(r[1].dbpm - 2) < 0.6);
+  assert.equal(r[0].baseline, 70);
+});

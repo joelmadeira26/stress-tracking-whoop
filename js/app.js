@@ -17,10 +17,12 @@ import {
   tensionSeries,
   sessionEnd,
   applyFeed,
+  applyAuto,
   detectReactions,
   meetingStress,
   deskBaseline,
   peopleEffects,
+  scoreDayMeetings,
   legendCategories,
   parseMatchClock,
   MAX_DELAY_MS,
@@ -30,6 +32,7 @@ import { generateWriteup } from './ai.js';
 import { renderMeetingBoard, renderShareImage, SHARE_FORMATS, buildCaption, shareOrDownload, downloadBlob, exportFileName, chartHeading, storyLine } from './export.js';
 import { DEMOS, demoMeetingWeek } from './demo.js';
 import { loadFixtures, syncEvent, searchableTeams, currentDrivers } from './feeds.js';
+import { calendarEvents, isConnected as gcalConnected, disconnect as gcalDisconnect } from './gcal.js';
 
 /* ---------------- Helpers ---------------- */
 
@@ -324,7 +327,7 @@ function fixtureCard(ev, withDay = false) {
         : clockTime(ev.date);
   const btn = `<button class="btn ${live || soon ? 'primary' : ''} watchbtn" data-watch="${esc(ev.key)}">${icon('tv')}Watch</button>`;
   if (ev.source === 'openf1') {
-    const drv = state.follow.drivers[0];
+    const drv = state.follow.drivers.length ? { name: state.follow.drivers.map((d) => d.name.split(' ').slice(-1)[0]).join(', ') } : null;
     return `<article class="fx ${live ? 'is-live' : ''}">
       <div class="fx-top"><span class="comp">${icon('flag')} Formula 1 · ${esc(ev.sessionName)}</span><span class="when">${when}</span></div>
       <div class="fx-body"><div class="fx-teams">
@@ -354,11 +357,10 @@ async function refreshFixtures(force = false) {
 
 function fixturesHtml(res) {
   if (!res) return `<div class="card loading"><span class="spinner"></span>Loading your games and races…</div>`;
-  const evs = res.events;
-  if (!evs.length) {
-    return `<div class="empty">${res.errors && res.errors === res.total ? "Couldn't load fixtures. Check your connection." : 'Nothing live or coming up in the next 9 days.'} <a href="#/following">Edit what you follow</a></div>`;
-  }
+  if (!res.events.length && res.errors && res.errors === res.total) return `<div class="empty">Couldn't load fixtures. Check your connection.</div>`;
   const isMine = (e) => e.source === 'openf1' || !!e.mine;
+  const evs = res.events.filter((e) => e.state !== 'post');
+  if (!evs.length) return `<div class="empty">Nothing live or coming up in the next 9 days. <a href="#/following">Edit what you follow</a></div>`;
   const live = evs.filter((e) => e.state === 'in');
   const mine = evs.filter((e) => e.state !== 'in' && isMine(e));
   const rest = evs.filter((e) => e.state !== 'in' && !isMine(e));
@@ -458,7 +460,8 @@ function watchSheet(ev) {
     return go('#/live');
   }
   const isF1 = ev.source === 'openf1';
-  let mine = ev.mine || null;
+  let mine = isF1 ? '0' : ev.mine || null;
+  const drivers = state.follow.drivers || [];
   const title = isF1 ? `${ev.meetingName}${ev.sessionName === 'Sprint' ? ' Sprint' : ''}` : `${ev.home.short} v ${ev.away.short}`;
   const m = showModal(`
     <div class="sheet-head">${isF1 ? img(ev.flag, 'flagimg big') : `${img(ev.home.logo, 'crest big')}${img(ev.away.logo, 'crest big')}`}</div>
@@ -466,7 +469,10 @@ function watchSheet(ev) {
     <p class="muted" style="margin-top:4px">${esc(ev.competition)} · ${ev.state === 'in' ? 'Live now' : ev.state === 'post' ? 'Finished' : `${dayLabel(ev.date)} ${clockTime(ev.date)}`}</p>
     ${
       isF1
-        ? `<p class="small">Your driver: <b>${esc(state.follow.drivers[0]?.name || 'none')}</b> <a href="#/following">change</a></p>`
+        ? drivers.length > 1
+          ? `<div class="field"><span class="muted small" style="display:block;margin:10px 0 6px;font-weight:500">Whose race is it for you?</span>
+          <div class="seg" id="wMine">${drivers.map((d, i) => `<button data-v="${i}">${esc(d.name.split(' ').slice(-1)[0])}</button>`).join('')}</div></div>`
+          : `<p class="small">Your driver: <b>${esc(drivers[0]?.name || 'none')}</b> <a href="#/following">change</a></p>`
         : `<div class="field"><span class="muted small" style="display:block;margin:10px 0 6px;font-weight:500">Your team</span>
           <div class="seg" id="wMine"><button data-v="home">${esc(ev.home.short)}</button><button data-v="away">${esc(ev.away.short)}</button><button data-v="">Neither</button></div></div>`
     }
@@ -511,7 +517,7 @@ async function startLinkedSession(ev, mine) {
     delayMs: state.settings.delaySec * 1000,
     delayCalibrated: false,
     event: isF1
-      ? { source: 'openf1', id: ev.id, sessionKey: ev.sessionKey, meetingName: ev.meetingName, sessionName: ev.sessionName, competition: 'Formula 1', flag: ev.flag, driver: state.follow.drivers[0] || null, date: ev.date }
+      ? { source: 'openf1', id: ev.id, sessionKey: ev.sessionKey, meetingName: ev.meetingName, sessionName: ev.sessionName, competition: 'Formula 1', flag: ev.flag, driver: (state.follow.drivers || [])[Number(mine) || 0] || null, date: ev.date }
       : { source: 'espn', id: ev.id, league: ev.league, competition: ev.competition, home: ev.home, away: ev.away, mine, date: ev.date },
   };
   if (!isF1) {
@@ -585,7 +591,32 @@ function renderStart(typeKey) {
     $('#fTitle').addEventListener('input', (e) => (e.target.dataset.touched = '1'));
   }
   let people = null;
-  if (type.attendees) knownPeople().then((known) => (people = peopleInput($('#fPeople'), [], known)));
+  if (type.attendees) {
+    knownPeople().then((known) => (people = peopleInput($('#fPeople'), [], known)));
+    if (state.settings.gcalClientId && gcalConnected()) {
+      const now = Date.now();
+      calendarEvents(state.settings.gcalClientId, now - 60 * 60000, now + 2 * 3600e3)
+        .then((evs) => {
+          const near = evs.filter((e) => e.end > now - 10 * 60000).slice(0, 3);
+          if (!near.length) return;
+          const box = document.createElement('div');
+          box.className = 'calpick';
+          box.innerHTML = `<div class="small muted">From your calendar</div>${near
+            .map((e, i) => `<button type="button" class="chip" data-ev="${i}">${esc(clockTime(e.start))} · ${esc(e.title)}</button>`)
+            .join('')}`;
+          $('#fTitle').closest('.card').prepend(box);
+          $$('[data-ev]', box).forEach((b) =>
+            b.addEventListener('click', async () => {
+              const e = near[Number(b.dataset.ev)];
+              $('#fTitle').value = e.title;
+              people = peopleInput($('#fPeople'), e.attendees, await knownPeople());
+              $$('[data-ev]', box).forEach((x) => x.classList.toggle('on', x === b));
+            }),
+          );
+        })
+        .catch(() => {});
+    }
+  }
   $('#fGo').addEventListener('click', async () => {
     const title = $('#fTitle').value.trim() || type.titleHint;
     const s = {
@@ -859,9 +890,17 @@ function renderLive() {
     </div>
     <div class="chart-card tight"><div class="cc-head"><div class="cc-key"><span><i style="background:${COLORS.hr}"></i>HEART RATE</span><span><i style="background:${COLORS.stressLow}"></i>STRESS</span></div></div>
       <div class="chartbox" id="liveChart"></div></div>
+    ${
+      s.type === 'workday'
+        ? `<div class="section-title" style="margin-top:14px"><h3>${icon('cal')} Today's meetings</h3><button class="linkbtn small" id="wdRefresh">Refresh</button></div>
+      <div id="wdCal" class="card tight">Loading your calendar…</div>
+      <p class="small muted" style="margin:0 2px 10px">Leave the phone on its charger with Pulse open. Every meeting is scored against your heart rate in the 90 minutes around it when you end the day.</p>
+      <div class="live-foot one"><button class="btn danger" id="endBtn">End work day</button></div>`
+        : ''
+    }
     ${linked ? `<div class="syncrow"><p class="feedline" id="feedLine"></p><button class="btn small" id="syncBtn">${icon('tv')} Sync stream</button></div><div id="calib"></div>` : ''}
     ${
-      !linked
+      !linked && s.type !== 'workday'
         ? `<div class="ctrl">
       ${type.phases ? `<button class="btn block" id="phaseBtn" style="min-height:60px;font-size:17px"></button>` : ''}
       ${type.toggle ? `<button class="btn block togglebtn" id="toggleBtn" style="min-height:60px;font-size:17px;color:${type.toggle.color}"></button>` : ''}
@@ -874,7 +913,9 @@ function renderLive() {
       <p class="small muted" style="margin:-4px 2px 10px">Goals, chances, cards and your heart-rate spikes are added for you. Just watch.</p>
       <ol class="mlist" id="liveMoments"></ol>
       <div class="live-foot one"><button class="btn danger" id="endBtn">End session</button></div>`
-        : `<div class="tags">${tagButtons}</div>
+        : s.type === 'workday'
+          ? ''
+          : `<div class="tags">${tagButtons}</div>
     <form class="freetag" id="freeForm"><input type="text" id="freeText" placeholder="Something else… (free text)" maxlength="60" autocomplete="off"/><button class="btn" type="submit">Tag</button></form>
     <div class="live-foot">
       <button class="btn" id="undoBtn">Undo last</button>
@@ -889,6 +930,11 @@ function renderLive() {
     if (state.strapStatus !== 'connected') connectStrap(false);
   });
   if ($('#syncBtn')) $('#syncBtn').addEventListener('click', () => syncSheet(s));
+  if (s.type === 'workday') {
+    $('#wdRefresh').addEventListener('click', () => refreshWorkdayCalendar(s, true));
+    if (s.calEvents && s.calEvents.length) $('#wdCal').innerHTML = workdayCalHtml(s, Date.now());
+    else refreshWorkdayCalendar(s, false);
+  }
   $$('[data-tag]').forEach((b) =>
     b.addEventListener('click', () => {
       const def = type.tags.find((d) => d.key === b.dataset.tag);
@@ -1020,18 +1066,15 @@ function isLight(hex) {
 let lastMomentsKey = '';
 /** Rebuild automatic moments + heart-rate reactions for a linked session. */
 function refreshAuto(s, now = Date.now()) {
-  if (!s.feed) return s;
-  applyFeed(s, now);
-  s.reactions = detectReactions(s, state.settings.restingHr);
-  applyFeed(s, now);
-  return s;
+  return applyAuto(s, state.settings.restingHr, now);
 }
 
 function refreshLive(withChart) {
   const s = state.live;
   if (!s || !$('#liveClock')) return;
   const now = Date.now();
-  if (s.feed) (withChart ? refreshAuto(s, now) : applyFeed(s, now));
+  if (withChart) refreshAuto(s, now);
+  else if (s.feed) applyFeed(s, now);
   const c = liveClock(s, now);
   $('#liveClock').textContent = c.big;
   $('#liveClockSub').textContent = c.sub;
@@ -1053,6 +1096,8 @@ function refreshLive(withChart) {
   }
   const fl = $('#feedLine');
   if (fl) fl.textContent = feedStatusText();
+  const wd = $('#wdCal');
+  if (wd && s.type === 'workday' && s.calEvents && s.calEvents.length && withChart) wd.innerHTML = workdayCalHtml(s, now);
   const cal = $('#calib');
   if (cal) {
     const cand = calibrationCandidate(s, now);
@@ -1209,6 +1254,12 @@ function renderEnd() {
     await db.saveSession(saved);
     await db.clearLive();
     state.live = null;
+    if (saved.type === 'workday') {
+      const r = await scoreWorkday(saved);
+      toast(r.total ? `${r.scored} of ${r.total} meetings scored` : 'Work day saved. No calendar meetings to score.');
+      go('#/meetings');
+      return;
+    }
     runWriteup(saved.id, true);
     go(`#/session/${saved.id}`);
   });
@@ -1219,7 +1270,7 @@ function finalize(s) {
   delete out.ended;
   out.restingHr = state.settings.restingHr;
   out.endTs = s.endTs || Date.now();
-  if (out.feed) refreshAuto(out, Date.now());
+  refreshAuto(out, Date.now());
   recomputeGoals(out);
   return out;
 }
@@ -1250,7 +1301,7 @@ async function renderSession(id) {
       <div class="card"><h3 style="margin-bottom:8px">Who was there</h3><div id="dPeople"></div>
       <button class="btn small" id="dSavePeople" style="margin-top:8px">Save people</button></div>`;
   };
-  if (linked && s.feed) {
+  if (!s.manual) {
     refreshAuto(s, Date.now());
     db.saveSession(s).catch(() => {});
   }
@@ -1268,6 +1319,11 @@ async function renderSession(id) {
       <button class="btn" id="wRegen">${icon('spark')} ${hasAi ? 'Re-analyse' : 'Analyse with AI'}</button>
     </div>
     <div id="dMeeting"></div>
+    ${
+      s.type === 'workday'
+        ? `<div class="card"><h3 style="margin-bottom:8px">${icon('cal')} Meetings this day</h3><p class="small muted" style="margin-top:0">${(s.calEvents || []).length} calendar meeting${(s.calEvents || []).length === 1 ? '' : 's'} recorded.</p><button class="btn small" id="wdScore">Score meetings again</button></div>`
+        : ''
+    }
     <div class="card ai-card"><h3 style="margin-bottom:10px">${icon('spark')} AI analysis</h3><div id="wBody" class="writeup"></div></div>
     ${
       linked
@@ -1362,6 +1418,24 @@ async function renderSession(id) {
         }
       });
     $('#dShare').addEventListener('click', () => shareSheet(s, rest));
+    const wds = $('#wdScore');
+    if (wds)
+      wds.addEventListener('click', async () => {
+        wds.disabled = true;
+        try {
+          if (state.settings.gcalClientId) {
+            s.calEvents = await calendarEvents(state.settings.gcalClientId, ...dayRange(s.startTs), { interactive: true });
+            applyCalendarBands(s);
+            await db.saveSession(s);
+          }
+          const r = await scoreWorkday(s);
+          toast(`${r.scored} of ${r.total} meetings scored`);
+          go('#/meetings');
+        } catch (e) {
+          toast(e.message);
+          wds.disabled = false;
+        }
+      });
     armButton($('#dDelete'), 'Tap again to delete', async () => {
       await db.deleteSession(s.id);
       toast('Session deleted');
@@ -1437,7 +1511,7 @@ async function runWriteup(id, auto) {
     renderWriteupBody(s);
     return;
   }
-  if (s.feed) refreshAuto(s, Date.now());
+  refreshAuto(s, Date.now());
   state.writeupBusy.add(id);
   renderWriteupBody(s);
   try {
@@ -1450,7 +1524,7 @@ async function runWriteup(id, auto) {
     }
     delete fresh.writeupError;
     delete fresh.writeupErrorKind;
-    if (fresh.feed) refreshAuto(fresh, Date.now());
+    refreshAuto(fresh, Date.now());
     await db.saveSession(fresh);
     state.writeupBusy.delete(id);
     if (detailRedraw) detailRedraw(fresh);
@@ -1574,10 +1648,124 @@ function shareSheet(s, rest) {
   render();
 }
 
+/* ---------------- Work day (all-day recording + calendar) ---------------- */
+
+async function startWorkday() {
+  if (state.live && !state.live.ended) {
+    toast('A session is already running');
+    return go('#/live');
+  }
+  const now = Date.now();
+  const s = {
+    id: uid(),
+    type: 'workday',
+    title: `Work day · ${new Date(now).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}`,
+    mode: 'doing',
+    startTs: now,
+    endTs: null,
+    restingHr: state.settings.restingHr,
+    samples: [],
+    tags: [],
+    bands: [],
+    notes: '',
+    writeup: null,
+    calEvents: [],
+  };
+  state.live = s;
+  state.undo = [];
+  await db.saveLive(s);
+  go('#/live');
+  refreshWorkdayCalendar(s, true);
+}
+
+function dayRange(t) {
+  const a = new Date(t);
+  a.setHours(0, 0, 0, 0);
+  return [a.getTime(), a.getTime() + 24 * 3600e3];
+}
+
+async function refreshWorkdayCalendar(s, interactive = false) {
+  if (!state.settings.gcalClientId) {
+    const el = $('#wdCal');
+    if (el) el.innerHTML = '<p class="small muted">Connect Google Calendar in Settings and your meetings appear here and get scored automatically. You can still add meetings manually afterwards.</p>';
+    return;
+  }
+  try {
+    const [a, b] = dayRange(s.startTs);
+    s.calEvents = await calendarEvents(state.settings.gcalClientId, a, b, { interactive });
+    applyCalendarBands(s);
+    db.saveLive(s).catch(() => {});
+    refreshLive(true);
+  } catch (e) {
+    const el = $('#wdCal');
+    if (el) el.innerHTML = `<p class="small error">${esc(e.message)}</p><button class="btn small" id="wdConnect">Connect Google Calendar</button>`;
+    const c = $('#wdConnect');
+    if (c) c.addEventListener('click', () => refreshWorkdayCalendar(s, true));
+  }
+}
+
+function applyCalendarBands(s) {
+  s.bands = [
+    ...(s.bands || []).filter((b) => b.key !== 'meeting'),
+    ...(s.calEvents || []).map((e) => ({ key: 'meeting', label: e.title, color: '#a78bfa', start: e.start, end: e.end, auto: true, cal: true })),
+  ];
+}
+
+function workdayCalHtml(s, now) {
+  const evs = s.calEvents || [];
+  if (!evs.length) return '<p class="small muted">No meetings found for today yet.</p>';
+  return `<ol class="wdlist">${evs
+    .map((e) => {
+      const st = now >= e.end ? 'done' : now >= e.start ? 'now' : 'next';
+      return `<li class="${st}"><span class="wt">${esc(clockTime(e.start))}–${esc(clockTime(e.end))}</span><span class="wn">${esc(e.title)}${
+        e.attendees.length ? `<small>${esc(e.attendees.slice(0, 4).join(', '))}${e.attendees.length > 4 ? ` +${e.attendees.length - 4}` : ''}</small>` : ''
+      }</span><span class="ws">${st === 'now' ? 'NOW' : st === 'done' ? '✓' : ''}</span></li>`;
+    })
+    .join('')}</ol>`;
+}
+
+/** Turn a finished work day into scored meeting sessions. Returns how many were scored. */
+async function scoreWorkday(day) {
+  const events = day.calEvents || [];
+  const scores = scoreDayMeetings(day.samples || [], events);
+  for (const sc of scores) {
+    const e = sc.event;
+    const from = e.start - 20 * 60000;
+    const to = e.end + 20 * 60000;
+    const sess = {
+      id: `cal-${e.id}`,
+      type: 'meeting',
+      title: e.title,
+      mode: 'doing',
+      startTs: Math.max(from, day.startTs),
+      endTs: Math.min(to, day.endTs || to),
+      restingHr: state.settings.restingHr,
+      samples: day.samples.filter((x) => x.t >= from && x.t <= to),
+      tags: [],
+      bands: [],
+      notes: '',
+      writeup: null,
+      attendees: e.attendees,
+      phases: { meetingStart: e.start },
+      calScore: { dbpm: sc.dbpm, baseline: sc.baseline, baseStd: sc.baseStd, z: sc.z, elevatedShare: sc.elevatedShare, coverage: sc.coverage, avgHr: sc.avgHr, peakHr: sc.peakHr, minutes: sc.minutes },
+      calendarEvent: { id: e.id, start: e.start, end: e.end },
+      workdayId: day.id,
+    };
+    const prev = await db.getSession(sess.id);
+    if (prev) {
+      sess.notes = prev.notes || '';
+      sess.writeup = prev.writeup || null;
+      sess.ai = prev.ai;
+    }
+    await db.saveSession(sess);
+  }
+  return { scored: scores.length, total: events.length };
+}
+
 /* ---------------- Meeting stress board ---------------- */
 
 const baselineText = (src) =>
-  src === 'measured' ? 'measured before it started' : src === 'usual' ? 'your usual desk baseline' : src === 'entered' ? 'entered' : 'estimated from resting HR';
+  src === 'day' ? 'your heart rate in the 90 min around it, outside meetings' : src === 'measured' ? 'measured before it started' : src === 'usual' ? 'your usual desk baseline' : src === 'entered' ? 'entered' : 'estimated from resting HR';
 
 async function knownPeople() {
   const all = await db.allSessions();
@@ -1659,8 +1847,10 @@ async function renderMeetings() {
 
   view.innerHTML = `
     <div class="topbar"><a class="iconbtn" href="#/" aria-label="Back">${icon('back')}</a><h1 class="grow">Meeting stress</h1></div>
+    <button class="btn primary block" id="mWorkday" style="min-height:58px;font-size:16.5px;margin-bottom:8px">${icon('cal')} Start work day</button>
+    <p class="small muted" style="margin:0 2px 12px">Records your heart rate all day (phone on its charger, Pulse open) and scores every meeting in your Google Calendar automatically.</p>
     <div class="row2" style="margin-bottom:12px">
-      <a class="btn primary" href="#/start/meeting">${icon('chat')} Record a meeting</a>
+      <a class="btn" href="#/start/meeting">${icon('chat')} One meeting</a>
       <button class="btn" id="mAdd">+ Add manually</button>
     </div>
     ${
@@ -1703,6 +1893,7 @@ async function renderMeetings() {
     }
   `;
   $('#mAdd').addEventListener('click', () => manualMeetingSheet());
+  $('#mWorkday').addEventListener('click', () => startWorkday());
   const demoBtn = $('#mDemo');
   if (demoBtn)
     demoBtn.addEventListener('click', async () => {
@@ -1907,8 +2098,11 @@ function renderFollowing() {
     <div class="section-title"><h3>Formula 1</h3></div>
     <div class="card">
       <label class="toggle"><span>Show F1 races & sprints</span><input type="checkbox" id="f1On" ${f.f1 ? 'checked' : ''}/><i></i></label>
-      <div class="field" style="margin-top:10px"><span class="muted small" style="display:block;margin-bottom:6px;font-weight:500">Your driver</span>
-        <select id="driverSel"><option>${esc(f.drivers[0]?.name || 'Loading drivers…')}</option></select></div>
+      <div class="field" style="margin-top:10px"><span class="muted small" style="display:block;margin-bottom:6px;font-weight:500">Your drivers</span>
+        <div class="followchips" style="margin-bottom:10px">${f.drivers
+          .map((d) => `<span class="fchip">${icon('flag')}${esc(d.name)}<button aria-label="Remove ${esc(d.name)}" data-rmdriver="${esc(d.last)}">×</button></span>`)
+          .join('') || '<span class="muted small">No drivers yet</span>'}</div>
+        <select id="driverSel"><option>Loading drivers…</option></select></div>
     </div>
   `;
   $$('[data-rmteam]').forEach((b) =>
@@ -1963,12 +2157,14 @@ function renderFollowing() {
   (async () => {
     try {
       driverIndex = driverIndex || (await currentDrivers());
-      const cur = f.drivers[0];
-      sel.innerHTML = driverIndex
-        .slice()
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((d) => `<option value="${esc(d.last)}" ${cur && cur.last === d.last ? 'selected' : ''}>${esc(d.name)}${d.team ? ` · ${esc(d.team)}` : ''}</option>`)
-        .join('');
+      sel.innerHTML =
+        '<option value="">+ Add a driver…</option>' +
+        driverIndex
+          .slice()
+          .filter((d) => !f.drivers.some((x) => x.last === d.last))
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((d) => `<option value="${esc(d.last)}">${esc(d.name)}${d.team ? ` · ${esc(d.team)}` : ''}</option>`)
+          .join('');
     } catch {
       /* keep current */
     }
@@ -1976,11 +2172,19 @@ function renderFollowing() {
   sel.addEventListener('change', () => {
     const d = (driverIndex || []).find((x) => x.last === sel.value);
     if (d) {
-      f.drivers = [{ name: d.name, last: d.last }];
+      f.drivers = [...f.drivers.filter((x) => x.last !== d.last), { name: d.name, last: d.last }];
       save();
-      toast(`Your driver: ${d.name}`);
+      toast(`Following ${d.name}`);
+      renderFollowing();
     }
   });
+  $$('[data-rmdriver]').forEach((b) =>
+    b.addEventListener('click', () => {
+      f.drivers = f.drivers.filter((x) => x.last !== b.dataset.rmdriver);
+      save();
+      renderFollowing();
+    }),
+  );
 }
 
 /* ---------------- Settings ---------------- */
@@ -2004,6 +2208,13 @@ function renderSettings() {
         <button class="btn small" id="sShow" type="button">Show</button></div></label>
       <div class="banner info small" style="margin-bottom:12px">🔒 Your key is stored only on this device (in this browser) and is sent only to api.anthropic.com when you ask for a write-up. Each write-up costs a small amount on your Anthropic account (typically around one US cent). Get a key at console.anthropic.com.</div>
       <label class="field" style="margin:0"><span>AI model</span><input type="text" id="sModel" value="${esc(st.model)}" spellcheck="false" autocomplete="off"/></label>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:10px">${icon('cal')} Google Calendar</h3>
+      <p class="small muted" style="margin-top:0">Pulse reads your meetings (title, time, attendees), read-only, straight from Google to this phone. It's used to score every meeting automatically in Work day mode.</p>
+      <label class="field"><span>Google OAuth client ID</span><input type="text" id="sGcal" placeholder="1234-abc.apps.googleusercontent.com" spellcheck="false" autocomplete="off" value="${esc(st.gcalClientId || '')}"/></label>
+      <div class="row2"><button class="btn" id="sGcalGo" type="button">${gcalConnected() ? 'Reconnect' : 'Connect Google Calendar'}</button><button class="btn ghost" id="sGcalOff" type="button" ${gcalConnected() ? '' : 'disabled'}>Disconnect</button></div>
+      <p class="small muted" id="sGcalStatus" style="margin:8px 0 0">${gcalConnected() ? 'Connected.' : 'Not connected.'} <a href="https://github.com/joelmadeira26/stress-tracking-whoop#google-calendar-setup" target="_blank" rel="noopener">How to get a client ID (5 min)</a></p>
     </div>
     <button class="btn primary block" id="sSave">Save settings</button>
 
@@ -2043,6 +2254,7 @@ function renderSettings() {
       restingHr: rest,
       delaySec: delay,
       apiKey: $('#sKey').value.trim(),
+      gcalClientId: $('#sGcal').value.trim(),
       model: $('#sModel').value.trim() || 'claude-sonnet-5-5',
     };
     saveSettings(state.settings);
@@ -2056,6 +2268,26 @@ function renderSettings() {
       go(`#/session/${s.id}`);
     }),
   );
+  $('#sGcalGo').addEventListener('click', async () => {
+    const id = $('#sGcal').value.trim();
+    if (!id) return toast('Paste your Google client ID first');
+    state.settings = { ...state.settings, gcalClientId: id };
+    saveSettings(state.settings);
+    try {
+      const now = Date.now();
+      const evs = await calendarEvents(id, now - 12 * 3600e3, now + 24 * 3600e3, { interactive: true });
+      $('#sGcalStatus').textContent = `Connected. ${evs.length} meeting${evs.length === 1 ? '' : 's'} today and tomorrow.`;
+      $('#sGcalOff').disabled = false;
+      toast('Google Calendar connected');
+    } catch (e) {
+      $('#sGcalStatus').textContent = e.message;
+    }
+  });
+  $('#sGcalOff').addEventListener('click', () => {
+    gcalDisconnect();
+    $('#sGcalStatus').textContent = 'Disconnected.';
+    $('#sGcalOff').disabled = true;
+  });
   $('#demoMeetings').addEventListener('click', async () => {
     for (const m of demoMeetingWeek(state.settings.restingHr)) await db.saveSession(m);
     toast('10 demo meetings loaded');

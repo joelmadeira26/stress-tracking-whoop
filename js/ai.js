@@ -27,6 +27,8 @@ Return JSON with:
     "Lap 2: Russell passes Max; Max retakes it around the outside at the last corner"
     "Formation lap begins. Your stress and heart rate start climbing"
     "77': Deniz Gül heads Galatasaray in from a corner; your heart rate jumps to 118"
+    "10:02 Budget review starts with Marco and Priya; your heart rate climbs 14 bpm above your baseline"
+    "Tough question on the numbers; your heart rate hits 96"
   Keep the minute ("77'") or lap ("Lap 19:") at the start when the original label has one. Say what happened using only facts in the input (label, detail, context lines). Where the heart-rate series clearly reacts around that time, add a short body note ("your heart rate jumps to 118", "stress peaks"). For moments with source "your body", explain what was going on at that time from the context and describe the body's reaction. Never invent players, scores, events or numbers.
 - "headline": one punchy line about the session.
 - "writeup": 120 to 200 words in second person ("you"), plain sentences, paragraphs separated by a blank line: where heart rate and stress peaked and why; when you were calmest; how fast you recovered after the big moments; which moments hit hardest (your team or driver vs the opponent); end with one practical takeaway starting "Takeaway:".
@@ -249,11 +251,13 @@ export function parseAnalysis(text, model) {
   if (!obj || typeof obj !== 'object') return { text: cleanText(text), model, createdAt, ai: null };
   const moments = {};
   const reactions = {};
+  const other = {};
   for (const it of Array.isArray(obj.moments) ? obj.moments : []) {
     if (!it || typeof it.id !== 'string' || typeof it.text !== 'string') continue;
     const t = cleanText(it.text).slice(0, 160);
     if (it.id.startsWith('f:')) moments[it.id.slice(2)] = t;
     else if (it.id.startsWith('r:')) reactions[it.id.slice(2)] = t;
+    else other[it.id] = t;
   }
   const headline = cleanText(String(obj.headline || ''));
   const writeup = cleanText(String(obj.writeup || ''));
@@ -261,6 +265,6 @@ export function parseAnalysis(text, model) {
     text: [headline, writeup].filter(Boolean).join('\n\n'),
     model,
     createdAt,
-    ai: { moments, reactions, headline, caption: String(obj.caption || '').replace(/\*\*/g, '').trim(), at: createdAt },
+    ai: { moments, reactions, other, headline, caption: String(obj.caption || '').replace(/\*\*/g, '').trim(), at: createdAt },
   };
 }
