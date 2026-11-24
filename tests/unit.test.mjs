@@ -7,7 +7,11 @@ import {
 } from '../js/analysis.js';
 import { staggerMarkers, chartSvg, monotonePath } from '../js/chart.js';
 import { buildRequest, generateWriteup, cleanText, API_URL } from '../js/ai.js';
-import { demoSport, demoMeeting, demoWorkout } from '../js/demo.js';
+import { demoSport, demoMeeting, demoWorkout, demoF1 } from '../js/demo.js';
+import { parseEspnSummary, parseOpenF1, normalizeEspnEvent } from '../js/feeds.js';
+import { applyFeed, categoryLabels, legendCategories } from '../js/analysis.js';
+import fs from 'node:fs';
+const fixture = (n) => JSON.parse(fs.readFileSync(new URL(`./fixtures/${n}`, import.meta.url)));
 
 /* ---------- Heart-rate parser ---------- */
 test('8-bit HR, no RR', () => {
@@ -156,7 +160,7 @@ test('demo sessions produce sensible stats', () => {
     assert.ok(numberedMoments(d).length >= 5);
   }
   const sport = demoSport(60);
-  assert.equal(displayTitle(sport), 'Benfica 2–1 Porto');
+  assert.equal(displayTitle(sport), 'Sporting CP 2–1 FC Porto');
   assert.ok(findGaps(sport.samples, sport.startTs, sport.endTs).length === 1, 'sport demo has one signal gap');
   const st = sessionStats(sport, 60);
   assert.ok(st.peakContext, 'peak has context');
@@ -180,9 +184,9 @@ test('chart SVG renders at 360 px and desktop widths', () => {
   for (const w of [360, 1200]) {
     const svg = chartSvg(s, w, w < 500 ? 280 : 380, { restingHr: 60 });
     assert.match(svg, new RegExp(`width="${w}"`));
-    assert.ok((svg.match(/<circle/g) || []).length === numberedMoments(s).length);
+    assert.equal((svg.match(/<circle/g) || []).length, numberedMoments(s).length);
     assert.ok(svg.includes('stroke-dasharray'));
-    assert.ok(svg.includes('Half-time'));
+    assert.ok(svg.includes('linearGradient'), 'stress line uses green→yellow gradient');
     assert.ok(!svg.includes('NaN'));
   }
 });
@@ -200,7 +204,7 @@ test('buildRequest has required headers and data', () => {
   const data = JSON.parse(req.body.messages[0].content.split('\n\n').slice(1).join('\n\n'));
   assert.equal(data.sessionType, 'Meeting');
   assert.ok(data.series30s.length > 80);
-  assert.ok(data.series30s.some((p) => p.tension != null));
+  assert.ok(data.series30s.some((p) => p.stress != null));
   assert.ok(data.moments.length === 5);
   assert.ok(data.bands.length === 5);
   assert.ok(data.myNotes.length > 10);
@@ -240,4 +244,103 @@ test('generateWriteup error handling', async () => {
 });
 test('cleanText', () => {
   assert.equal(cleanText('# Head\n* one\n__two__'), 'Head\none\ntwo');
+});
+
+/* ---------- Live feeds (real recorded data) ---------- */
+test('ESPN summary: Liverpool 4–0 Man Utd parsed into moments with real times', () => {
+  const r = parseEspnSummary(fixture('espn-liv-mun.json'), { mine: 'away' });
+  assert.deepEqual(r.score, { home: 4, away: 0 });
+  assert.equal(r.status.state, 'post');
+  assert.ok(r.phases.kickoff && r.phases.halftime && r.phases.secondhalf && r.phases.fulltime);
+  const goals = r.moments.filter((m) => /Goal/.test(m.label));
+  assert.equal(goals.length, 4);
+  assert.ok(goals.every((g) => g.cat === 'goalTheirs' && g.side === 'home'));
+  assert.equal(goals[0].label, "10' Goal Liverpool (1–0): Dominik Szoboszlai");
+  assert.equal(goals[3].label.slice(0, 26), "82' Goal Liverpool (4–0): ");
+  const red = r.moments.find((m) => m.cat === 'card');
+  assert.match(red.label, /^8' Red card: Leny Yoro \(Manchester United\)/);
+  assert.ok(r.moments.every((m) => Number.isFinite(m.ft)));
+  assert.equal(r.moments.at(-1).cat, 'finish');
+  // no favourite → home/away colours
+  const n = parseEspnSummary(fixture('espn-liv-mun.json'));
+  assert.ok(n.moments.filter((m) => /Goal/.test(m.label)).every((g) => g.cat === 'goalHome'));
+});
+
+test('ESPN goal side detection from running score (incl. own goals)', () => {
+  const d = {
+    header: { competitions: [{ status: { type: { state: 'in' } }, competitors: [
+      { homeAway: 'home', score: '2', team: { id: '1', displayName: 'Sporting CP', shortDisplayName: 'Sporting CP' } },
+      { homeAway: 'away', score: '1', team: { id: '2', displayName: 'Manchester United', shortDisplayName: 'Man United' } }] }] },
+    keyEvents: [
+      { id: 'a', type: { type: 'kickoff' }, wallclock: '2026-11-25T20:00:00Z', period: { number: 1 }, clock: { value: 0 } },
+      { id: 'b', type: { type: 'goal' }, wallclock: '2026-11-25T20:10:00Z', clock: { value: 600, displayValue: "11'" }, text: 'Goal! Sporting CP 1, Manchester United 0. Luis Suárez (Sporting CP) right footed shot.' },
+      { id: 'c', type: { type: 'own-goal' }, wallclock: '2026-11-25T20:30:00Z', clock: { value: 1800, displayValue: "31'" }, text: 'Own Goal by Ousmane Diomande, Sporting CP. Sporting CP 1, Manchester United 1.' },
+      { id: 'd', type: { type: 'penalty---scored' }, clock: { value: 2400, displayValue: "41'" }, period: { number: 1 }, text: 'Goal! Sporting CP 2, Manchester United 1. Luis Suárez (Sporting CP) converts the penalty.' },
+    ],
+    commentary: [{ sequence: 9, time: { value: 2000, displayValue: "34'" }, text: 'VAR Decision: No Penalty Sporting CP.', play: { wallclock: '2026-11-25T20:34:00Z' } }],
+  };
+  const r = parseEspnSummary(d, { mine: 'home' });
+  const labels = r.moments.map((m) => `${m.cat}|${m.label}`);
+  assert.deepEqual(labels, [
+    "goalMine|11' Goal Sporting CP (1–0): Luis Suárez",
+    "goalTheirs|31' Goal Man United (1–1): Ousmane Diomande (own goal)",
+    "key|34' VAR: No Penalty Sporting CP",
+    "goalMine|41' Goal Sporting CP (2–1): Luis Suárez (pen)",
+  ]);
+  const pen = r.moments.find((m) => /pen/.test(m.label));
+  assert.equal(pen.est, true, 'no wallclock → estimated from kick-off + clock');
+  assert.equal(pen.ft, Date.parse('2026-11-25T20:00:00Z') + 2400 * 1000);
+});
+
+test('OpenF1: Las Vegas GP 2026 story for Max', () => {
+  const r = parseOpenF1(fixture('f1-lasvegas-2026.json'), 'VERSTAPPEN');
+  assert.equal(r.myDriver.name, 'Max');
+  assert.equal(r.myDriver.won, true);
+  const labels = r.moments.map((m) => m.label);
+  assert.equal(labels[0], 'Lights out. Max starts P1');
+  assert.ok(labels.includes('Lap 2: Russell briefly takes the lead; Max retakes it'));
+  assert.ok(labels.some((l) => /^Lap 19: Safety car; Max pits \(2\.\d s stop\)$/.test(l)));
+  assert.equal(labels.at(-1), 'Max wins by 0.639s over Norris');
+  assert.equal(r.bands.length, 1);
+  assert.equal(r.bands[0].label, 'SAFETY CAR');
+  assert.ok(!labels.some((l) => /Red flag/.test(l)), '"CHEQUERED FLAG" must not be read as a red flag');
+  assert.ok(r.moments.filter((m) => m.cat === 'lead').length <= 10, 'lead changes are grouped');
+});
+
+test('applyFeed: TV delay shifts moments, hides future ones, clips to session', () => {
+  const t0 = Date.parse('2026-11-25T20:00:00Z');
+  const s = { type: 'sport', startTs: t0 + 5 * 60000, endTs: null, samples: [], tags: [{ id: 'm', t: t0 + 20 * 60000, label: 'So nervous', cat: 'reaction', color: '#d946ef' }], bands: [],
+    teams: { home: 'Sporting CP', away: 'Man United', mine: 'home' }, delayMs: 40000,
+    feed: { score: { home: 1, away: 0 }, phases: { kickoff: t0 }, bands: [], moments: [
+      { fid: 'early', ft: t0 + 60000, cat: 'key', label: 'before you started' },
+      { fid: 'g', ft: t0 + 10 * 60000, cat: 'goalMine', label: "11' Goal" },
+      { fid: 'late', ft: t0 + 29 * 60000 + 30000, cat: 'card', label: 'not on TV yet' },
+    ] } };
+  applyFeed(s, t0 + 30 * 60000);
+  const auto = s.tags.filter((g) => g.auto);
+  assert.deepEqual(auto.map((g) => g.label), ["11' Goal"]);
+  assert.equal(auto[0].t, t0 + 10 * 60000 + 40000);
+  assert.equal(auto[0].est, true, 'uncalibrated delay → "~"');
+  assert.equal(auto[0].catLabel, 'Goal Sporting CP');
+  assert.equal(s.phases.kickoff, t0 + 40000);
+  assert.equal(s.tags.filter((g) => !g.auto).length, 1, 'manual reactions kept');
+  assert.deepEqual(s.score, { home: 1, away: 0 });
+  applyFeed(s, t0 + 31 * 60000);
+  assert.equal(s.tags.filter((g) => g.auto).length, 2, 'card appears once it would be on TV');
+});
+
+test('F1 demo legend categories match the reference', () => {
+  const s = demoF1(60);
+  assert.deepEqual(legendCategories(s).map((c) => c.label), ['Your reaction', 'Key moment', 'Max loses and retakes the lead', 'Safety car', 'Max wins']);
+  assert.equal(categoryLabels(s).finish, 'Max wins');
+  const svg = chartSvg(s, 360, 300, { restingHr: 60 });
+  assert.ok(svg.includes('SAFETY CAR'));
+});
+
+test('normalizeEspnEvent', () => {
+  const e = normalizeEspnEvent({ id: 1, date: '2026-11-25T20:00Z', league: { slug: 'uefa.champions' }, competitions: [{ status: { type: { state: 'pre', shortDetail: '8:00 PM' } }, competitors: [
+    { homeAway: 'home', team: { id: 2250, displayName: 'Sporting CP', logos: [{ href: 'x.png' }] } }, { homeAway: 'away', team: { id: 360, displayName: 'Manchester United' } }] }] });
+  assert.equal(e.competition, 'Champions League');
+  assert.equal(e.home.logo, 'x.png');
+  assert.equal(e.away.id, '360');
 });

@@ -1,5 +1,5 @@
 // Pure data functions: bucketing, tension estimate, match clock, stats.
-import { CALM_MARGIN, SESSION_TYPES } from './config.js';
+import { CALM_MARGIN, SESSION_TYPES, CATEGORIES } from './config.js';
 
 const SEC = 1000;
 const MIN = 60 * SEC;
@@ -70,12 +70,12 @@ export function elapsedLabel(ms) {
 }
 
 export function clockTime(t) {
-  const d = new Date(t);
-  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
 /** Label used for a moment in legends: match minute for sport, clock time otherwise. */
-export function momentTimeLabel(session, t) {
+export function momentTimeLabel(session, t, tag) {
+  if (session.feed) return (tag && tag.est ? '~' : '') + clockTime(t);
   const type = SESSION_TYPES[session.type];
   if (type && type.clock === 'match') {
     const mm = matchMinute(session, t);
@@ -283,6 +283,9 @@ export function sessionStats(session, restingHr) {
 
 /** Title for display / export: "Benfica 2–1 Porto" for sport, otherwise the session title. */
 export function displayTitle(session) {
+  if (session.event && session.event.source === 'openf1') {
+    return `${session.event.meetingName}${session.event.sessionName === 'Sprint' ? ' Sprint' : ''}`;
+  }
   if (session.teams && session.teams.home && session.teams.away) {
     const sc = session.score || { home: 0, away: 0 };
     return `${session.teams.home} ${sc.home}–${sc.away} ${session.teams.away}`;
@@ -292,7 +295,7 @@ export function displayTitle(session) {
 
 /** Recompute score and goal labels from tags (used after undo / adding forgotten goals). */
 export function recomputeGoals(session) {
-  if (!session.teams) return;
+  if (!session.teams || session.feed) return;
   const score = { home: 0, away: 0 };
   const tags = [...session.tags].sort((a, b) => a.t - b.t);
   for (const g of tags) {
@@ -314,7 +317,7 @@ export function goalColor(session, team) {
 export function numberedMoments(session) {
   return [...(session.tags || [])]
     .sort((a, b) => a.t - b.t)
-    .map((g, i) => ({ ...g, n: i + 1, timeLabel: momentTimeLabel(session, g.t) }));
+    .map((g, i) => ({ ...g, n: i + 1, timeLabel: momentTimeLabel(session, g.t, g) }));
 }
 
 /* ---------------- Recovery after big moments (for the AI) ---------------- */
@@ -349,4 +352,89 @@ export function recoveryAfterTags(session) {
     });
   }
   return res;
+}
+
+/* ---------------- Live event feed → session ---------------- */
+
+/** Category labels for this session ("Goal Sporting CP", "Max wins", …). */
+export function categoryLabels(session) {
+  const L = Object.fromEntries(Object.entries(CATEGORIES).map(([k, v]) => [k, v.label]));
+  const tm = session.teams;
+  if (tm) {
+    L.goalHome = `Goal ${tm.home}`;
+    L.goalAway = `Goal ${tm.away}`;
+    if (tm.mine) {
+      L.goalMine = `Goal ${tm[tm.mine]}`;
+      L.goalTheirs = `Goal ${tm[tm.mine === 'home' ? 'away' : 'home']}`;
+    }
+    L.finish = 'Full time';
+  }
+  const me = session.feed && session.feed.myDriver;
+  if (me) {
+    if (me.leadInvolved) L.lead = `${me.name} loses and retakes the lead`;
+    L.pit = `${me.name} pits`;
+    L.finish = me.won ? `${me.name} wins` : 'Result';
+  }
+  return L;
+}
+
+/**
+ * Rebuild auto moments / bands / phases / score from session.feed.
+ * Feed times are real-world; the TV shows them `delayMs` later.
+ * Moments are shown only once they'd be on your screen, and only inside the session window.
+ */
+export function applyFeed(session, now = Date.now()) {
+  const f = session.feed;
+  if (!f) return session;
+  const d = session.delayMs ?? 40000;
+  const startT = session.startTs;
+  const endT = session.endTs || now;
+  const labels = categoryLabels(session);
+  const manual = (session.tags || []).filter((g) => !g.auto);
+  const auto = (f.moments || [])
+    .filter((m) => m.ft + d >= startT && m.ft + d <= endT)
+    .map((m) => ({
+      id: 'f:' + m.fid,
+      t: m.ft + d,
+      auto: true,
+      est: !!m.est || !session.delayCalibrated,
+      cat: m.cat,
+      label: m.label,
+      color: (CATEGORIES[m.cat] || CATEGORIES.key).color,
+      catLabel: labels[m.cat] || m.cat,
+    }));
+  for (const g of manual) if (g.cat) g.catLabel = labels[g.cat] || g.catLabel;
+  session.tags = [...manual, ...auto];
+  session.bands = [
+    ...(session.bands || []).filter((b) => !b.auto),
+    ...(f.bands || [])
+      .filter((b) => b.end + d >= startT && b.start + d <= endT)
+      .map((b) => ({
+        key: b.cat,
+        label: b.label,
+        color: (CATEGORIES[b.cat] || CATEGORIES.key).color,
+        start: Math.max(b.start + d, startT),
+        end: Math.min(b.end + d, endT),
+        auto: true,
+      })),
+  ];
+  const ph = f.phases || {};
+  session.phases = {};
+  for (const k of Object.keys(ph)) if (ph[k] + d <= endT) session.phases[k] = ph[k] + d;
+  if (f.score) session.score = { ...f.score };
+  return session;
+}
+
+/** Unique legend categories in order of appearance: [{label, color}] */
+export function legendCategories(session) {
+  const seen = new Map();
+  for (const m of numberedMoments(session)) {
+    const label = m.catLabel || m.label;
+    if (!seen.has(label)) seen.set(label, m.color);
+  }
+  const out = [...seen].map(([label, color]) => ({ label, color }));
+  for (const b of allBands(session)) {
+    if (b.key === 'sc' && !out.some((o) => o.label === 'Safety car')) out.push({ label: 'Safety car', color: b.color });
+  }
+  return out;
 }

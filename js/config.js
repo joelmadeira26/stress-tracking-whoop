@@ -2,19 +2,42 @@
 // To add a new session type, add one entry to SESSION_TYPES (see README).
 
 export const COLORS = {
-  bg: '#070d1c',
-  panel: '#0e1830',
+  bg: '#0b0d12',
+  panel: '#161a22',
   grid: 'rgba(255,255,255,0.07)',
   axis: 'rgba(255,255,255,0.55)',
-  text: '#f4f7fb',
-  muted: '#8a97b3',
-  hr: '#3da5ff',
-  tension: '#f5c242',
-  mine: '#2ed47a',
-  theirs: '#ff4d5e',
-  free: '#e2e8f0',
+  text: '#f2f4f8',
+  muted: '#8b93a3',
+  hr: '#8ab8ea',
+  stressLow: '#6fe0a0',
+  stressHigh: '#ecd36a',
+  tension: '#9fe08a', // legend swatch for "stress"
+  mine: '#3fb950',
+  theirs: '#f85149',
+  free: '#e5e7eb',
   gap: 'rgba(255,255,255,0.05)',
 };
+
+/*
+ * Moment categories (the coloured dots in the legend).
+ * `label` may be overridden per session (e.g. "Goal Sporting CP", "Max wins").
+ */
+export const CATEGORIES = {
+  reaction: { label: 'Your reaction', color: '#d946ef' },
+  key: { label: 'Key moment', color: '#e5e7eb' },
+  goalMine: { label: 'Goal (my team)', color: '#3fb950' },
+  goalTheirs: { label: 'Goal (opponent)', color: '#f85149' },
+  goalHome: { label: 'Goal (home)', color: '#58a6ff' },
+  goalAway: { label: 'Goal (away)', color: '#f0883e' },
+  card: { label: 'Red card', color: '#fb923c' },
+  lead: { label: 'Lead changes', color: '#f0883e' },
+  pit: { label: 'Pit stop', color: '#58a6ff' },
+  sc: { label: 'Safety car', color: '#e3b341' },
+  finish: { label: 'Result', color: '#e5484d' },
+};
+
+/** Quick "Your reaction" buttons shown when the event feed does the logging. */
+export const REACTIONS = ['So nervous', 'Big chance!', 'Celebrating', 'Furious', "Can't watch"];
 
 /*
  * Each session type:
@@ -51,6 +74,16 @@ export const SESSION_TYPES = {
       { key: 'redcard', label: 'Red card', color: '#fb923c' },
       { key: 'var', label: 'VAR check', color: '#94a3b8' },
     ],
+  },
+  f1: {
+    label: 'Watching F1',
+    short: 'F1',
+    icon: 'flag',
+    defaultMode: 'watching',
+    clock: 'elapsed',
+    titleHint: 'Las Vegas Grand Prix',
+    feedOnly: true,
+    tags: [],
   },
   meeting: {
     label: 'Meeting',
@@ -92,6 +125,44 @@ export const DEFAULT_SETTINGS = {
   restingHr: 60,
   apiKey: '',
   model: 'claude-sonnet-5-5',
+  delaySec: 40, // TV/stream delay behind the live data feed
+};
+
+/* ---------------- Following ---------------- */
+
+// ESPN soccer competitions Pulse knows about (slug -> name).
+export const COMPETITIONS = {
+  'por.1': 'Liga Portugal',
+  'por.taca.portugal': 'Taça de Portugal',
+  'eng.1': 'Premier League',
+  'eng.fa': 'FA Cup',
+  'eng.league_cup': 'Carabao Cup',
+  'uefa.champions': 'Champions League',
+  'uefa.europa': 'Europa League',
+  'uefa.europa.conf': 'Conference League',
+  'esp.1': 'LaLiga',
+  'ita.1': 'Serie A',
+  'ger.1': 'Bundesliga',
+  'fra.1': 'Ligue 1',
+  'fifa.world': 'World Cup',
+  'fifa.worldq.uefa': 'World Cup qualifying (UEFA)',
+  'uefa.nations': 'Nations League',
+  'uefa.euro': 'European Championship',
+  'fifa.friendly': 'International friendly',
+};
+
+// Leagues whose team lists feed the "Add team" search.
+export const TEAM_SEARCH_LEAGUES = ['por.1', 'eng.1', 'esp.1', 'ita.1', 'ger.1', 'fra.1', 'fifa.world'];
+
+export const DEFAULT_FOLLOW = {
+  teams: [
+    { id: '2250', name: 'Sporting CP', league: 'por.1', logo: 'https://a.espncdn.com/i/teamlogos/soccer/500/2250.png' },
+    { id: '360', name: 'Manchester United', league: 'eng.1', logo: 'https://a.espncdn.com/i/teamlogos/soccer/500/360.png' },
+    { id: '482', name: 'Portugal', league: 'fifa.world', logo: 'https://a.espncdn.com/i/teamlogos/countries/500/por.png' },
+  ],
+  competitions: ['por.1', 'eng.1', 'uefa.champions', 'uefa.europa'],
+  f1: true,
+  drivers: [{ name: 'Max Verstappen', last: 'VERSTAPPEN' }],
 };
 
 // Calm zone ceiling = resting HR + this (same 15 bpm that makes the HR part of tension = 1).
@@ -101,6 +172,9 @@ export const ICONS = {
   ball: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7.5l4 2.9-1.5 4.7h-5L8 10.4z"/><path d="M12 3v4.5M16 10.4l4.3-1.4M14.5 15.1l2.7 3.7M9.5 15.1l-2.7 3.7M8 10.4L3.7 9"/></svg>',
   chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v11H9l-5 4z" stroke-linejoin="round"/><path d="M8 9.5h8M8 12.5h5"/></svg>',
   bolt: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2L4 14h7l-1 8 9-12h-7z" stroke-linejoin="round"/></svg>',
+  flag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 21V4M5 4h12l-2 4 2 4H5" stroke-linejoin="round"/><path d="M9 4v8M13 4v8" stroke-opacity=".5"/></svg>',
+  star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z" stroke-linejoin="round"/></svg>',
+  tv: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/></svg>',
   heart: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.5-4.6-9.5-9.4C1.2 8.2 3.4 4.5 7 4.5c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.6 0 5.8 3.7 4.5 7.1C19.5 16.4 12 21 12 21z"/></svg>',
   home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l9-7 9 7v9h-6v-6H9v6H3z" stroke-linejoin="round"/></svg>',
   list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" stroke-linecap="round"/></svg>',

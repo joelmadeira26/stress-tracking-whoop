@@ -69,3 +69,21 @@ export function saveSettings(s) {
 export function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
+
+// What you follow (teams, competitions, F1 drivers).
+const FOLLOW_KEY = 'pulse.follow';
+export function loadFollow(defaults) {
+  try {
+    const raw = localStorage.getItem(FOLLOW_KEY);
+    return raw ? { ...defaults, ...JSON.parse(raw) } : JSON.parse(JSON.stringify(defaults));
+  } catch {
+    return JSON.parse(JSON.stringify(defaults));
+  }
+}
+export function saveFollow(f) {
+  try {
+    localStorage.setItem(FOLLOW_KEY, JSON.stringify(f));
+  } catch {
+    /* ignore */
+  }
+}

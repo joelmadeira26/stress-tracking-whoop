@@ -1,6 +1,7 @@
 // Realistic demo sessions (no strap needed).
 import { SESSION_TYPES } from './config.js';
-import { recomputeGoals, goalColor } from './analysis.js';
+import { applyFeed } from './analysis.js';
+import { CATEGORIES } from './config.js';
 import { uid } from './db.js';
 
 const SEC = 1000;
@@ -82,27 +83,30 @@ function baseSession(type, title, startTs, extra = {}) {
   };
 }
 
-/* ---------------- Football: Benfica 2–1 Porto ---------------- */
+/* ---------------- Football: Sporting CP 2–1 FC Porto (auto moments) ---------------- */
 export function demoSport(rest = 60) {
-  const start = daysAgoAt(2, 19, 50);
+  const start = daysAgoAt(2, 20, 20);
   const KO = 10 * 60; // seconds after start
   const HT = KO + 47 * 60;
   const SH = HT + 15 * 60;
   const FT = SH + 50 * 60;
   const END = FT + 6 * 60;
-  const m1 = (min) => KO + (min - 1) * 60 + 25; // first-half minute -> sec
-  const m2 = (min) => SH + (min - 46) * 60 + 25; // second-half minute -> sec
+  const m1 = (min) => KO + (min - 1) * 60 + 25;
+  const m2 = (min) => SH + (min - 46) * 60 + 25;
+  const at = (s) => start + s * SEC;
 
-  const events = [
-    { s: m1(12), amp: 12, key: 'chance', label: 'Big chance' },
-    { s: m1(23), amp: 30, key: 'goal_home', team: 'home' },
-    { s: m1(31), amp: 14, key: 'var', label: 'VAR check' },
-    { s: m1(38), amp: 24, key: 'goal_away', team: 'away', tau: 160 },
-    { s: m2(55), amp: 20, key: 'redcard', label: 'Red card' },
-    { s: m2(64), amp: 8, key: 'free', label: 'Keeper save' },
-    { s: m2(77), amp: 22, key: 'penalty', label: 'Penalty' },
-    { s: m2(78), amp: 26, key: 'goal_home', team: 'home', tau: 120 },
-    { s: m2(90) + 3 * 60, amp: 18, key: 'var', label: 'VAR check' },
+  const feedMoments = [
+    { s: m1(12), amp: 10, cat: 'key', label: "12' Off the bar: Francisco Trincão (Sporting CP)" },
+    { s: m1(23), amp: 30, cat: 'goalMine', label: "23' Goal Sporting CP (1–0): Luis Suárez" },
+    { s: m1(31), amp: 14, cat: 'key', label: "31' VAR: Goal Sporting CP disallowed for offside" },
+    { s: m1(38), amp: 24, cat: 'goalTheirs', label: "38' Goal FC Porto (1–1): Samu Aghehowa", tau: 160 },
+    { s: m2(55), amp: 18, cat: 'card', label: "55' Red card: Alan Varela (FC Porto)" },
+    { s: m2(76), amp: 20, cat: 'key', label: "76' VAR: Penalty Sporting CP" },
+    { s: m2(78), amp: 28, cat: 'goalMine', label: "78' Goal Sporting CP (2–1): Luis Suárez (pen)", tau: 120 },
+    { s: m2(90) + 3 * 60, amp: 18, cat: 'key', label: "90+3' VAR: No penalty FC Porto" },
+  ];
+  const reactions = [
+    { s: m2(86), amp: 10, label: "86' So nervous" },
   ];
 
   const hrAt = (s) => {
@@ -113,39 +117,97 @@ export function demoSport(rest = 60) {
     else if (s < FT) base = 81 + ((s - SH) / (FT - SH)) * 9 + Math.sin(s / 250) * 2;
     else base = 88 - Math.min(1, (s - FT) / 240) * 14;
     let v = base;
-    for (const e of events) v += impulse(s - e.s, e.amp, e.tau || 90);
+    for (const e of [...feedMoments, ...reactions]) v += impulse(s - e.s, e.amp, e.tau || 90);
     if (s >= FT) v += impulse(s - FT, 10, 60);
     return v;
   };
 
-  const session = baseSession('sport', 'Benfica v Porto', start, {
-    teams: { home: 'Benfica', away: 'Porto', mine: 'home' },
-    score: { home: 0, away: 0 },
+  const session = baseSession('sport', 'Sporting CP v FC Porto', start, {
+    teams: { home: 'Sporting CP', away: 'FC Porto', mine: 'home' },
+    score: { home: 2, away: 1 },
     restingHr: rest,
+    event: {
+      source: 'espn',
+      id: 'demo',
+      league: 'por.1',
+      competition: 'Liga Portugal',
+      home: { name: 'Sporting CP', short: 'Sporting CP', logo: 'https://a.espncdn.com/i/teamlogos/soccer/500/2250.png' },
+      away: { name: 'FC Porto', short: 'FC Porto', logo: 'https://a.espncdn.com/i/teamlogos/soccer/500/437.png' },
+      mine: 'home',
+    },
+    delayMs: 0,
+    delayCalibrated: true,
   });
   session.samples = generate(start, END, hrAt, { seed: 7, rest, gaps: [[m2(66), m2(66) + 75]] });
-  session.phases = {
-    kickoff: start + KO * SEC,
-    halftime: start + HT * SEC,
-    secondhalf: start + SH * SEC,
-    fulltime: start + FT * SEC,
+  session.feed = {
+    status: { state: 'post', detail: 'FT', completed: true },
+    score: { home: 2, away: 1 },
+    phases: { kickoff: at(KO), halftime: at(HT), secondhalf: at(SH), fulltime: at(FT) },
+    moments: [
+      ...feedMoments.map((e, i) => ({ fid: 'd' + i, ft: at(e.s), est: false, cat: e.cat, label: e.label })),
+      { fid: 'ft', ft: at(FT), est: false, cat: 'finish', label: 'Full time: Sporting CP 2–1 FC Porto' },
+    ],
+    bands: [],
   };
-  const cfg = SESSION_TYPES.sport;
-  session.tags = events.map((e) => {
-    const def = cfg.tags.find((t) => t.key === e.key);
-    return {
-      id: uid(),
-      t: start + e.s * SEC,
-      key: e.key,
-      team: e.team,
-      label: e.label || (def && def.label) || 'Note',
-      color: e.team ? goalColor(session, e.team) : (def && def.color) || '#e2e8f0',
-    };
-  });
-  recomputeGoals(session);
-  session.endTs = start + END * SEC;
+  session.tags = reactions.map((r) => ({ id: uid(), t: at(r.s), key: 'reaction', cat: 'reaction', label: r.label, color: CATEGORIES.reaction.color, catLabel: 'Your reaction' }));
+  session.endTs = at(END);
+  applyFeed(session);
   session.notes =
-    'Tense one. Went ahead early, Porto equalised before the break and it felt like it was slipping. Their red card changed it, and the late penalty was pure nerves. The VAR check in stoppage time nearly killed me.';
+    'Clássico nerves. Went ahead early, Porto equalised before the break. Their red card changed it and the late penalty was pure nerves. The VAR check in stoppage time nearly killed me.';
+  return session;
+}
+
+/* ---------------- F1: Las Vegas Grand Prix (auto moments) ---------------- */
+export function demoF1(rest = 60) {
+  const start = daysAgoAt(3, 20, 45);
+  const LO = 17 * 60; // lights out 17 min after you start watching
+  const lap = 104; // seconds per lap
+  const L = (n) => LO + (n - 1) * lap;
+  const FIN = L(51);
+  const END = FIN + 13 * 60;
+  const at = (s) => start + s * SEC;
+  const mom = [
+    { s: LO, amp: 26, cat: 'key', label: 'Lights out. Max starts P1' },
+    { s: L(2), amp: 18, cat: 'lead', label: 'Lap 2: Russell briefly takes the lead; Max retakes it' },
+    { s: L(8), amp: 12, cat: 'lead', label: 'Lap 8: Hadjar briefly takes the lead; Max retakes it' },
+    { s: L(10), amp: 16, cat: 'lead', label: 'Laps 10 to 18: lead swaps back and forth between Max and Russell' },
+    { s: L(19), amp: 14, cat: 'sc', label: 'Lap 19: Safety car; Max pits (2.4 s stop)' },
+    { s: L(26), amp: 22, cat: 'lead', label: 'Lap 26: Russell passes Max; Max retakes the lead within the lap' },
+    { s: L(34), amp: 14, cat: 'lead', label: 'Lap 34: Norris briefly takes the lead; Max retakes it' },
+    { s: L(37), amp: 16, cat: 'lead', label: 'Laps 37 to 47: lead swaps back and forth between Max and Antonelli' },
+    { s: FIN, amp: 24, cat: 'finish', label: 'Max wins by 0.639s over Norris', tau: 70 },
+  ];
+  const reactions = [{ s: LO - 2 * 60, amp: 12, label: 'Formation lap. Nerves kicking in' }];
+  const scStart = L(19);
+  const scEnd = L(25);
+  const hrAt = (s) => {
+    let v = 76 + Math.min(1, s / LO) * 6;
+    if (s > LO) v += 4 + Math.sin(s / 200) * 2;
+    if (s > scStart && s < scEnd) v -= 7 * Math.min(1, (s - scStart) / 120) * Math.min(1, (scEnd - s) / 90);
+    if (s > L(40) && s < FIN) v += 5;
+    if (s > FIN) v -= Math.min(14, (s - FIN) / 30);
+    for (const e of [...mom, ...reactions]) v += impulse(s - e.s, e.amp, e.tau || 100);
+    return v;
+  };
+  const session = baseSession('f1', 'Las Vegas Grand Prix', start, {
+    restingHr: rest,
+    event: { source: 'openf1', id: 'demo', sessionKey: null, meetingName: 'Las Vegas Grand Prix', sessionName: 'Race', competition: 'Formula 1', driver: { name: 'Max Verstappen', last: 'VERSTAPPEN' } },
+    delayMs: 0,
+    delayCalibrated: true,
+  });
+  session.samples = generate(start, END, hrAt, { seed: 31, rest });
+  session.feed = {
+    status: { state: 'post', detail: 'Finished', completed: true },
+    phases: {},
+    moments: mom.map((e, i) => ({ fid: 'f' + i, ft: at(e.s), est: false, cat: e.cat, label: e.label })),
+    bands: [{ fid: 'sc1', start: at(scStart), end: at(scEnd), label: 'SAFETY CAR', cat: 'sc' }],
+    myDriver: { name: 'Max', full: 'Max Verstappen', number: 3, won: true, leadInvolved: true },
+    result: { position: 1 },
+  };
+  session.tags = reactions.map((r) => ({ id: uid(), t: at(r.s), key: 'reaction', cat: 'reaction', label: r.label, color: CATEGORIES.reaction.color, catLabel: 'Your reaction' }));
+  session.endTs = at(END);
+  applyFeed(session);
+  session.notes = 'Couldn’t sit still for the last 10 laps with Antonelli all over him. Safety car was a breather.';
   return session;
 }
 
@@ -250,4 +312,4 @@ export function demoWorkout(rest = 60) {
   return session;
 }
 
-export const DEMOS = { sport: demoSport, meeting: demoMeeting, workout: demoWorkout };
+export const DEMOS = { sport: demoSport, f1: demoF1, meeting: demoMeeting, workout: demoWorkout };

@@ -24,6 +24,18 @@ const r2 = (n) => Math.round(n * 100) / 100;
 export class SvgPainter {
   constructor() {
     this.parts = [];
+    this.defs = [];
+    this.gid = 0;
+  }
+  /** Vertical gradient for strokes: stops = [[offset, colour], ...] from y1 to y2 (user space). */
+  gradient(y1, y2, stops) {
+    const id = `g${++this.gid}${Math.random().toString(36).slice(2, 6)}`;
+    this.defs.push(
+      `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="0" y1="${r2(y1)}" x2="0" y2="${r2(y2)}">${stops
+        .map(([o, c]) => `<stop offset="${o}" stop-color="${c}"/>`)
+        .join('')}</linearGradient>`,
+    );
+    return `url(#${id})`;
   }
   rect(x, y, w, h, st = {}) {
     this.parts.push(
@@ -51,17 +63,24 @@ export class SvgPainter {
     const anchor = st.anchor || 'start';
     const fam = st.font === 'num' ? FONT_NUM : FONT_TEXT;
     this.parts.push(
-      `<text x="${r2(x)}" y="${r2(y)}" fill="${st.fill || COLORS.text}" font-family="${esc(fam)}" font-size="${st.size || 11}" font-weight="${st.weight || 400}" text-anchor="${anchor}" dominant-baseline="${st.baseline === 'middle' ? 'central' : 'alphabetic'}"${st.opacity != null ? ` fill-opacity="${st.opacity}"` : ''}>${esc(str)}</text>`,
+      `<text x="${r2(x)}" y="${r2(y)}" fill="${st.fill || COLORS.text}" font-family="${esc(fam)}" font-size="${st.size || 11}" font-weight="${st.weight || 400}" text-anchor="${anchor}"${st.spacing ? ` letter-spacing="${st.spacing}"` : ''} dominant-baseline="${st.baseline === 'middle' ? 'central' : 'alphabetic'}"${st.opacity != null ? ` fill-opacity="${st.opacity}"` : ''}>${esc(str)}</text>`,
     );
   }
   toString(w, h) {
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Heart rate and tension chart">${this.parts.join('')}</svg>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Heart rate and stress chart">${
+      this.defs.length ? `<defs>${this.defs.join('')}</defs>` : ''
+    }${this.parts.join('')}</svg>`;
   }
 }
 
 export class CanvasPainter {
   constructor(ctx) {
     this.ctx = ctx;
+  }
+  gradient(y1, y2, stops) {
+    const g = this.ctx.createLinearGradient(0, y1, 0, y2);
+    for (const [o, c] of stops) g.addColorStop(o, c);
+    return g;
   }
   rect(x, y, w, h, st = {}) {
     const c = this.ctx;
@@ -145,6 +164,7 @@ export class CanvasPainter {
     c.globalAlpha = st.opacity != null ? st.opacity : 1;
     c.textAlign = st.anchor === 'middle' ? 'center' : st.anchor === 'end' ? 'right' : 'left';
     c.textBaseline = st.baseline === 'middle' ? 'middle' : 'alphabetic';
+    if (st.spacing && 'letterSpacing' in c) c.letterSpacing = `${st.spacing}px`;
     c.fillText(str, x, y);
     c.restore();
   }
@@ -222,9 +242,31 @@ export function staggerMarkers(xs, radius, maxRows = 3) {
 
 /* ---------------- Chart ---------------- */
 
+function isLight(hex) {
+  const m = String(hex).match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i);
+  if (!m) return true;
+  const [r, g, b] = [1, 2, 3].map((i) => parseInt(m[i], 16));
+  return 0.299 * r + 0.587 * g + 0.114 * b > 150;
+}
+
+/** Centered moving average over ±w points (skips nulls). */
+function smooth(series, w = 2) {
+  return series.map((p, i) => {
+    if (p.value == null) return p;
+    let s = 0;
+    let n = 0;
+    for (let j = i - w; j <= i + w; j++) if (series[j] && series[j].value != null) (s += series[j].value), n++;
+    return { ...p, value: s / n };
+  });
+}
+
+export function timeTick(t) {
+  return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
 /**
  * Draws the chart into `painter` inside box (x0, y0, W, H).
- * opts: { restingHr, now (live end time), scale (font scale) }
+ * opts: { restingHr, now (live end time), scale }
  */
 export function drawChart(painter, session, x0, y0, W, H, opts = {}) {
   const rest = opts.restingHr ?? 60;
@@ -236,54 +278,53 @@ export function drawChart(painter, session, x0, y0, W, H, opts = {}) {
   const span = end - start;
 
   const moments = numberedMoments(session);
-  const radius = (compact ? 8.5 : 10) * k;
-  const rowH = radius * 2 + 3 * k;
+  const radius = (compact ? 7 : 8) * k;
+  const rowH = radius * 2 + 4 * k;
 
-  const xLeftPad = (compact ? 30 : 40) * k;
-  const xRightPad = (compact ? 22 : 34) * k;
+  const xLeftPad = (compact ? 30 : 44) * k;
+  const xRightPad = (compact ? 20 : 34) * k;
   const plotX = x0 + xLeftPad;
   const plotW = W - xLeftPad - xRightPad;
 
-  // Stagger markers first to know how many rows we need.
   const xf = (t) => plotX + ((t - start) / span) * plotW;
   const mxs = moments.map((g) => xf(g.t));
   const rows = staggerMarkers(mxs, radius, 3);
   const nRows = moments.length ? Math.max(...rows) + 1 : 0;
 
-  const topPad = (16 + nRows * rowH + (nRows ? 4 : 0)) * 1 + 2 * k;
-  const bottomPad = 22 * k;
+  const topPad = 8 * k + nRows * rowH + (nRows ? 8 * k : 6 * k);
+  const bottomPad = 24 * k;
   const plotY = y0 + topPad;
   const plotH = H - topPad - bottomPad;
 
   // Data
   const hr10 = bucketHr(session.samples, start, end, 10 * 1000);
-  const ten = tensionSeries(session, rest).series.filter((p) => p.t <= end + 1);
+  const ten = smooth(tensionSeries(session, rest).series.filter((p) => p.t <= end + 1), 2);
   const vals = hr10.filter((b) => b.avg != null).map((b) => b.avg);
   let lo = vals.length ? Math.min(...vals) : rest;
   let hi = vals.length ? Math.max(...vals) : rest + 40;
-  lo = Math.floor((Math.min(lo, rest + 5) - 5) / 10) * 10;
-  hi = Math.ceil((hi + 5) / 10) * 10;
-  if (hi - lo < 30) hi = lo + 30;
+  const step = hi - lo > 60 ? 20 : 10;
+  lo = Math.floor((Math.min(lo, rest + 5) - 4) / step) * step;
+  hi = Math.ceil((hi + 4) / step) * step;
+  if (hi - lo < 3 * step) hi = lo + 3 * step;
   const yHr = (v) => plotY + plotH - ((v - lo) / (hi - lo)) * plotH;
   const yTen = (v) => plotY + plotH - (v / 3) * plotH;
 
-  // Panel background
-  painter.rect(plotX, plotY, plotW, plotH, { fill: '#0b1530', opacity: 1 });
+  // Plot area
+  painter.rect(plotX, plotY, plotW, plotH, { fill: '#ffffff', opacity: 0.025, stroke: 'rgba(255,255,255,0.07)', width: 1 });
 
   // Bands
-  const bands = allBands(session, opts.now);
-  for (const b of bands) {
+  for (const b of allBands(session, opts.now)) {
     const bx = Math.max(plotX, xf(b.start));
     const bw = Math.min(plotX + plotW, xf(b.end)) - bx;
     if (bw <= 0) continue;
-    painter.rect(bx, plotY, bw, plotH, { fill: b.color || '#ffffff', opacity: b.key === 'halftime' ? 0.16 : 0.13 });
-    if (bw > 26 * k) {
-      painter.text(bx + 4 * k, plotY + 12 * k, b.label, {
-        size: 9.5 * k,
-        weight: 600,
-        fill: b.color || COLORS.text,
-        opacity: 0.95,
-      });
+    const ht = b.key === 'halftime';
+    const sc = b.key === 'sc';
+    painter.rect(bx, plotY, bw, plotH, { fill: ht ? '#ffffff' : b.color || '#ffffff', opacity: sc ? 0.22 : ht ? 0.06 : 0.12 });
+    const lbl = String(b.label || '').toUpperCase();
+    if (sc || ht) {
+      if (bw > 18 * k) painter.text(bx + bw / 2, plotY + plotH - 8 * k, lbl, { size: 8.5 * k, weight: 600, anchor: 'middle', fill: sc ? '#e3b341' : COLORS.muted, spacing: 0.6 * k });
+    } else if (bw > 34 * k) {
+      painter.text(bx + 4 * k, plotY + 11 * k, lbl, { size: 8 * k, weight: 600, fill: b.color || COLORS.text, opacity: 0.9, spacing: 0.5 * k });
     }
   }
 
@@ -292,72 +333,72 @@ export function drawChart(painter, session, x0, y0, W, H, opts = {}) {
     const gx = xf(g.start);
     const gw = xf(g.end) - gx;
     if (gw < 1) continue;
-    painter.rect(gx, plotY, gw, plotH, { fill: '#ffffff', opacity: 0.045 });
-    if (gw > 46 * k) painter.text(gx + gw / 2, plotY + plotH - 6 * k, 'no signal', { size: 9 * k, anchor: 'middle', fill: COLORS.muted });
+    painter.rect(gx, plotY, gw, plotH, { fill: '#000000', opacity: 0.25 });
+    if (gw > 46 * k) painter.text(gx + gw / 2, plotY + 12 * k, 'NO SIGNAL', { size: 8 * k, anchor: 'middle', fill: COLORS.muted, spacing: 0.5 * k });
   }
 
-  // Grid + left axis (bpm)
-  const tickEvery = plotH / ((hi - lo) / 10) < 18 * k ? 20 : 10;
-  for (let v = Math.ceil(lo / tickEvery) * tickEvery; v <= hi; v += tickEvery) {
+  // Grid + axes
+  for (let v = lo; v <= hi; v += step) {
     const y = yHr(v);
-    painter.line(plotX, y, plotX + plotW, y, { stroke: '#ffffff', opacity: 0.07, width: 1 });
-    painter.text(plotX - 6 * k, y, String(v), { size: 10.5 * k, anchor: 'end', baseline: 'middle', fill: COLORS.hr, font: 'num', weight: 600 });
+    if (v > lo && v < hi) painter.line(plotX, y, plotX + plotW, y, { stroke: '#ffffff', opacity: 0.08, width: 1 });
+    painter.text(plotX - 8 * k, y, String(v), { size: 10.5 * k, anchor: 'end', baseline: 'middle', fill: '#c4cad6', weight: 500 });
   }
-  // Right axis (tension 0–3)
   for (let v = 0; v <= 3; v++) {
-    painter.text(plotX + plotW + 6 * k, yTen(v), String(v), { size: 10.5 * k, baseline: 'middle', fill: COLORS.tension, font: 'num', weight: 600 });
+    painter.text(plotX + plotW + 8 * k, yTen(v), String(v), { size: 10.5 * k, baseline: 'middle', fill: '#c4cad6', weight: 500 });
   }
-  painter.text(plotX - 6 * k, plotY - 13 * k, 'bpm', { size: 9 * k, anchor: 'end', fill: COLORS.hr, weight: 600 });
 
-  // X axis clock labels
+  // X axis clock labels (+ bold end time, like the original)
   const pxPerMin = plotW / (span / 60000);
-  const stepMin = niceStep(span / 60000, (compact ? 52 : 70) * k, pxPerMin);
+  const stepMin = niceStep(span / 60000, (compact ? 62 : 84) * k, pxPerMin);
   const stepMs = stepMin * 60000;
-  const first = Math.ceil(start / stepMs) * stepMs;
-  for (let t = first; t <= end; t += stepMs) {
+  const endX = plotX + plotW;
+  const endLabel = timeTick(end);
+  painter.text(endX, plotY + plotH + 16 * k, endLabel, { size: 10.5 * k, anchor: 'end', fill: COLORS.text, weight: 700 });
+  const endLabelW = endLabel.length * 6.2 * k + 8 * k;
+  for (let t = Math.ceil(start / stepMs) * stepMs; t <= end; t += stepMs) {
     const x = xf(t);
-    painter.line(x, plotY + plotH, x, plotY + plotH + 4 * k, { stroke: '#ffffff', opacity: 0.35 });
-    painter.text(x, plotY + plotH + 16 * k, clockTime(t), { size: 10.5 * k, anchor: 'middle', fill: COLORS.axis, font: 'num', weight: 500 });
+    if (x > endX - endLabelW - 18 * k) continue;
+    painter.text(x, plotY + plotH + 16 * k, timeTick(t), { size: 10.5 * k, anchor: 'middle', fill: COLORS.muted, weight: 500 });
   }
 
   // Phase lines (kick-off, full time)
   for (const pl of phaseLines(session)) {
-    if (pl.t > end) continue;
+    if (pl.t > end || pl.t < start) continue;
     const x = xf(pl.t);
-    painter.line(x, plotY, x, plotY + plotH, { stroke: '#ffffff', width: 1.4 * k, opacity: 0.6 });
-    painter.text(x + 3 * k, plotY + plotH - 6 * k, pl.label, { size: 9.5 * k, weight: 700, fill: '#ffffff', opacity: 0.8, font: 'num' });
+    painter.line(x, plotY, x, plotY + plotH, { stroke: '#ffffff', width: 1 * k, opacity: 0.3 });
+    painter.text(x + 3 * k, plotY + plotH - 8 * k, pl.label, { size: 8.5 * k, weight: 600, fill: COLORS.muted, spacing: 0.4 * k });
   }
 
   // HR fill + line
-  const hrRuns = runs(hr10, xf, yHr, 'avg');
-  for (const r of hrRuns) {
+  for (const r of runs(hr10, xf, yHr, 'avg')) {
     if (r.length < 2) continue;
     const base = plotY + plotH;
-    const fill = [['M', r[0][0], base], ...r.map((p) => ['L', p[0], p[1]]), ['L', r[r.length - 1][0], base], ['Z']];
-    painter.path(fill, { fill: COLORS.hr, fillOpacity: 0.14 });
-    painter.path(r.map((p, i) => [i ? 'L' : 'M', p[0], p[1]]), { stroke: COLORS.hr, width: 1.7 * k });
+    painter.path([['M', r[0][0], base], ...r.map((p) => ['L', p[0], p[1]]), ['L', r[r.length - 1][0], base], ['Z']], { fill: COLORS.hr, fillOpacity: 0.08 });
+    painter.path(r.map((p, i) => [i ? 'L' : 'M', p[0], p[1]]), { stroke: COLORS.hr, width: 1.3 * k });
   }
 
-  // Tension line (smooth)
+  // Stress line: smooth, green when calm → yellow when high
+  const grad = painter.gradient(yTen(0.6), yTen(2.6), [
+    [0, COLORS.stressLow],
+    [1, COLORS.stressHigh],
+  ]);
   for (const r of runs(ten, xf, yTen, 'value')) {
-    painter.path(monotonePath(r), { stroke: COLORS.tension, width: 2.2 * k });
+    painter.path(monotonePath(r), { stroke: grad, width: 2.6 * k });
   }
 
-  // Tag markers
-  const markerTop = y0 + 14 * k;
+  // Moment markers
   moments.forEach((g, i) => {
     const x = mxs[i];
     if (x < plotX - 1 || x > plotX + plotW + 1) return;
-    const cy = markerTop + radius + rows[i] * rowH;
-    painter.line(x, cy + radius, x, plotY + plotH, { stroke: g.color, width: 1.2 * k, dash: [3 * k, 3 * k], opacity: 0.85 });
-    painter.circle(x, cy, radius, { fill: g.color, stroke: '#070d1c', width: 1.5 * k });
+    const cy = y0 + 8 * k + radius + rows[i] * rowH;
+    painter.line(x, cy + radius, x, plotY + plotH, { stroke: g.color, width: 1 * k, dash: [3 * k, 3 * k], opacity: 0.6 });
+    painter.circle(x, cy, radius, { fill: g.color, stroke: 'rgba(0,0,0,0.35)', width: 1 * k });
     painter.text(x, cy + 0.5 * k, String(g.n), {
-      size: (g.n > 9 ? 10 : 11.5) * k,
+      size: (g.n > 9 ? 8.5 : 9.5) * k,
       weight: 700,
       anchor: 'middle',
       baseline: 'middle',
-      fill: '#07101f',
-      font: 'num',
+      fill: isLight(g.color) ? '#111418' : '#ffffff',
     });
   });
 
@@ -381,5 +422,5 @@ export function sparklineSvg(session, w = 96, h = 30) {
   const hi = Math.max(...b.map((x) => x.avg));
   const pts = b.map((x) => [((x.t - start) / (end - start)) * (w - 2) + 1, h - 2 - ((x.avg - lo) / (hi - lo || 1)) * (h - 4)]);
   const d = pts.map((p, i) => `${i ? 'L' : 'M'}${r2(p[0])} ${r2(p[1])}`).join('');
-  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><path d="${d}" fill="none" stroke="${COLORS.hr}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><path d="${d}" fill="none" stroke="${COLORS.hr}" stroke-width="1.4" stroke-linejoin="round"/></svg>`;
 }

@@ -1,5 +1,5 @@
 // Pulse service worker: network-first for HTML (so updates arrive), cache fallback offline.
-const VERSION = 'pulse-v1';
+const VERSION = 'pulse-v2';
 const SHELL = [
   './',
   './index.html',
@@ -15,6 +15,7 @@ const SHELL = [
   './js/export.js',
   './js/ai.js',
   './js/demo.js',
+  './js/feeds.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
 ];
