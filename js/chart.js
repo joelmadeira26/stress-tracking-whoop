@@ -57,7 +57,7 @@ export class SvgPainter {
   }
   circle(cx, cy, r, st = {}) {
     this.parts.push(
-      `<circle cx="${r2(cx)}" cy="${r2(cy)}" r="${r}" fill="${st.fill || 'none'}"${st.stroke ? ` stroke="${st.stroke}" stroke-width="${st.width || 1}"` : ''}/>`,
+      `<circle cx="${r2(cx)}" cy="${r2(cy)}" r="${r}" fill="${st.fill || 'none'}"${st.stroke ? ` stroke="${st.stroke}" stroke-width="${st.width || 1}"` : ''}${st.n != null ? ` data-n="${st.n}" class="mk"` : ''}/>`,
     );
   }
   text(x, y, str, st = {}) {
@@ -406,7 +406,7 @@ export function drawChart(painter, session, x0, y0, W, H, opts = {}) {
     if (x < plotX - 1 || x > plotX + plotW + 1) return;
     const cy = y0 + 8 * k + radius + rows[i] * rowH;
     painter.line(x, cy + radius, x, plotY + plotH, { stroke: g.color, width: 1 * k, dash: [3 * k, 3 * k], opacity: 0.6 });
-    painter.circle(x, cy, radius, { fill: g.color, stroke: 'rgba(0,0,0,0.35)', width: 1 * k });
+    painter.circle(x, cy, radius, { fill: g.color, stroke: 'rgba(0,0,0,0.35)', width: 1 * k, n: g.n });
     painter.text(x, cy + 0.5 * k, String(g.n), {
       size: (g.n > 9 ? 8.5 : 9.5) * k,
       weight: 700,

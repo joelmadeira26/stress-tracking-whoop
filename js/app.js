@@ -20,6 +20,9 @@ import {
   applyAuto,
   detectReactions,
   meetingStress,
+  configureAnalysis,
+  personalScale,
+  dataQuality,
   deskBaseline,
   peopleEffects,
   scoreDayMeetings,
@@ -31,7 +34,10 @@ import { chartSvg, sparklineSvg } from './chart.js';
 import { generateWriteup } from './ai.js';
 import { renderMeetingBoard, renderShareImage, SHARE_FORMATS, buildCaption, shareOrDownload, downloadBlob, exportFileName, chartHeading, storyLine } from './export.js';
 import { DEMOS, demoMeetingWeek } from './demo.js';
-import { loadFixtures, syncEvent, searchableTeams, currentDrivers } from './feeds.js';
+import { loadFixtures, syncEvent, searchableTeams, currentDrivers, configureFeeds, backupLiveScore } from './feeds.js';
+import * as whoop from './whoop.js';
+import { hashPin, checkPin, isUnlocked, markUnlocked, biometricAvailable, registerBiometric, verifyBiometric } from './lock.js';
+import { buildIcs, fixtureToEvent } from './ics.js';
 import { calendarEvents, isConnected as gcalConnected, disconnect as gcalDisconnect } from './gcal.js';
 
 /* ---------------- Helpers ---------------- */
@@ -189,6 +195,7 @@ const routes = [
   [/^#\/following$/, renderFollowing, 'following'],
   [/^#\/settings$/, renderSettings, 'settings'],
   [/^#\/meetings$/, renderMeetings, 'home'],
+  [/^#\/whoop(\?.*)?$/, renderWhoopCallback, 'settings'],
   [/^#\/start\/(\w+)$/, renderStart, 'home'],
   [/^#\/live$/, renderLive, null],
   [/^#\/end$/, renderEnd, null],
@@ -196,7 +203,9 @@ const routes = [
 ];
 
 let cleanup = null;
+let routeSeq = 0; // async screens draw only if they are still the current one
 async function route() {
+  routeSeq++;
   if (cleanup) {
     cleanup();
     cleanup = null;
@@ -387,7 +396,9 @@ function fixturesHtml(res) {
 }
 
 async function renderHome() {
+  const my = routeSeq;
   const sessions = await db.allSessions();
+  if (my !== routeSeq) return;
   const liveBanner = state.live
     ? `<a class="banner info resume" href="#/${state.live.ended ? 'end' : 'live'}"><b>Session running:</b> ${esc(displayTitle(state.live))} → Return</a>`
     : '';
@@ -400,7 +411,8 @@ async function renderHome() {
       <button class="otherbtn" data-start="sport">${icon('ball')}<span>Other match</span></button>
     </div>
     <a class="meetcard" href="#/meetings" id="meetCard">${icon('chat')}<div class="grow"><b>Meeting stress</b><span class="small muted" id="meetSummary">See which meetings raise your heart rate</span></div><span class="chev">›</span></a>
-    <div class="section-title"><h3>Sports</h3><a href="#/following" class="small">Edit</a></div>
+    ${weeklyHtml(sessions)}
+    <div class="section-title"><h3>Sports</h3><span><button class="linkbtn small" id="remindAll">${icon('cal')} Add to calendar</button> <a href="#/following" class="small">Edit</a></span></div>
     <div id="fixtures">${fixturesHtml(state.fixtures)}</div>
     <div class="section-title"><h3>Recent sessions</h3>${sessions.length > 4 ? '<a href="#/history" class="small">See all</a>' : ''}</div>
     ${sessionListHtml(sessions.slice(0, 4))}
@@ -408,9 +420,16 @@ async function renderHome() {
   bindStrapChip();
   renderStrapBits();
   $$('[data-start]').forEach((b) => b.addEventListener('click', () => go(`#/start/${b.dataset.start}`)));
+  $('#remindAll').addEventListener('click', () => {
+    const evs = ((state.fixtures && state.fixtures.events) || []).filter((e) => e.state === 'pre' && (e.source === 'openf1' || e.mine));
+    if (!evs.length) return toast('No upcoming games for your teams or drivers yet');
+    downloadIcs(evs, 'pulse-my-games.ics');
+    toast(`${evs.length} game${evs.length > 1 ? 's' : ''} ready to add to your calendar`);
+  });
   {
     const ms = sessions.filter((x) => x.type === 'meeting');
-    if (ms.length) {
+    if (ms.length && state.settings.lockOn && !isUnlocked()) $('#meetSummary').textContent = `${ms.length} meetings · locked`;
+    else if (ms.length) {
       const rows = meetingRows(ms);
       const top = rows.filter((r) => r.elevation != null).sort((a, b) => b.elevation - a.elevation)[0];
       $('#meetSummary').textContent = `${ms.length} meeting${ms.length > 1 ? 's' : ''}${top ? ` · highest +${top.elevation} bpm (${top.title})` : ''}`;
@@ -480,6 +499,7 @@ function watchSheet(ev) {
     ${state.strapStatus !== 'connected' && support.ok ? '<p class="small" style="color:#fbd38d">Strap not connected yet. You can connect it on the next screen.</p>' : ''}
     <div class="actions">
       <button class="btn primary" id="wGo" style="min-height:58px;font-size:17px">${icon('tv')} I'm watching, start</button>
+      ${ev.state === 'pre' ? `<button class="btn" id="wRemind">${icon('cal')} Remind me ${state.settings.reminderMin} min before</button>` : ''}
       <button class="btn ghost" id="wCancel">Cancel</button>
     </div>`);
   const seg = $('#wMine', m);
@@ -493,6 +513,12 @@ function watchSheet(ev) {
       }
     });
   $('#wCancel', m).addEventListener('click', hideModal);
+  const rem = $('#wRemind', m);
+  if (rem)
+    rem.addEventListener('click', () => {
+      downloadIcs([ev], `pulse-${ev.key.replace(/[^a-z0-9]/gi, '-')}.ics`);
+      toast('Open the file to add the reminder to your calendar');
+    });
   $('#wGo', m).addEventListener('click', async () => {
     hideModal();
     await startLinkedSession(ev, mine);
@@ -748,6 +774,15 @@ async function pollFeed() {
     };
   } catch (e) {
     state.feedStatus = { ok: false, at: state.feedStatus.at, msg: e.status === 401 || e.status === 403 ? 'f1wait' : e.message };
+    try {
+      const b = await backupLiveScore(s.event);
+      if (b) {
+        s.feed = { moments: [], bands: [], phases: {}, ...(s.feed || {}), score: b.score, status: b.status };
+        state.feedStatus = { ok: true, at: Date.now(), msg: 'backup' };
+      }
+    } catch {
+      /* backup unavailable too */
+    }
   }
   if (state.live === s) {
     const wasPending = s.calib && s.calib.pending;
@@ -761,6 +796,7 @@ function feedStatusText() {
   const s = state.live;
   if (!s || !s.event) return '';
   const fs = state.feedStatus;
+  if (fs.msg === 'backup') return `Live score from backup source (ESPN unavailable) · stream delay ${Math.round((s.delayMs ?? 0) / 1000)} s`;
   if (fs.msg === 'f1wait') return 'F1 live timing may only be published after the race. Pulse fills in the moments when you save.';
   if (fs.ok === null) return 'Connecting to live data…';
   if (!fs.ok) return `Live data unavailable (${fs.msg}). Retrying…`;
@@ -1016,6 +1052,7 @@ function renderLive() {
   refreshLive(true);
   renderStrapBits();
   const tick = setInterval(() => refreshLive(false), 1000);
+  const calTimer = s.type === 'workday' && state.settings.calAutoRefresh ? setInterval(() => refreshWorkdayCalendar(s, false), 15 * 60000) : null;
   const chartTick = setInterval(() => refreshLive(true), 5000);
   const autosave = setInterval(() => db.saveLive(s).catch(() => {}), 5000);
   let feedTimer = null;
@@ -1027,6 +1064,7 @@ function renderLive() {
   ro.observe($('#liveChart'));
   cleanup = () => {
     clearInterval(tick);
+    if (calTimer) clearInterval(calTimer);
     clearInterval(chartTick);
     clearInterval(autosave);
     if (feedTimer) clearInterval(feedTimer);
@@ -1280,7 +1318,9 @@ function finalize(s) {
 let detailRedraw = null; // set while a session page is open, so the AI result can refresh it
 
 async function renderSession(id) {
+  const my = routeSeq;
   let s = await db.getSession(id);
+  if (my !== routeSeq) return;
   if (!s) {
     view.innerHTML = `<div class="topbar"><a class="iconbtn" href="#/history">${icon('back')}</a><h1>Not found</h1></div>`;
     return;
@@ -1289,6 +1329,7 @@ async function renderSession(id) {
   const rest = state.settings.restingHr;
   const linked = !!s.event;
   let heroUrl = null;
+  if ((s.type === 'meeting' || s.type === 'workday') && !(await lockGate())) return;
   if (s.manual) return renderManualMeeting(s);
   const meetingHtml = async () => {
     if (s.type !== 'meeting') return '';
@@ -1314,9 +1355,16 @@ async function renderSession(id) {
       <div class="grow"><div class="small muted">${esc(type.label)} · ${fmtDate(s.startTs)}${s.demo ? ' · Demo' : ''}</div>
       <h1 style="font-size:26px">${esc(displayTitle(s))}</h1></div></div>
     <a class="hero" id="dHero" target="_blank" rel="noopener" aria-label="Open the chart full size"><span class="spinner"></span>Drawing your chart…</a>
+    ${detailInfoHtml(s)}
     <div class="detail-actions">
       <button class="btn primary" id="dShare">${icon('share')} Share</button>
       <button class="btn" id="wRegen">${icon('spark')} ${hasAi ? 'Re-analyse' : 'Analyse with AI'}</button>
+    </div>
+    <div class="explore" id="dExplore" ${s.samples && s.samples.length ? '' : 'hidden'}>
+      <div class="explore-bar"><span class="grow">Tap a numbered marker to read it. Zoom to look closer.</span>
+        <button class="btn small" data-zoom="1">1×</button><button class="btn small" data-zoom="2">2×</button><button class="btn small" data-zoom="4">4×</button></div>
+      <div class="explore-scroll" id="dExploreSvg"></div>
+      <div class="explore-cap" id="dExploreCap">Tap a marker on the chart.</div>
     </div>
     <div id="dMeeting"></div>
     ${
@@ -1348,6 +1396,7 @@ async function renderSession(id) {
   `;
     drawHero();
     bind();
+    drawExplore(1);
     meetingHtml().then((h) => {
       const slot = $('#dMeeting');
       if (!slot || !h) return;
@@ -1363,6 +1412,24 @@ async function renderSession(id) {
     });
   };
 
+  let zoom = 1;
+  const drawExplore = (z = zoom) => {
+    zoom = z;
+    const box = $('#dExploreSvg');
+    if (!box || !s.samples || !s.samples.length) return;
+    const w = Math.max(320, Math.floor(box.clientWidth || 340));
+    box.innerHTML = chartSvg(s, w * zoom, w < 500 ? 300 : 380, { restingHr: rest });
+    $$('[data-zoom]').forEach((b) => b.classList.toggle('primary', Number(b.dataset.zoom) === zoom));
+  };
+  view.addEventListener('click', (e) => {
+    const z = e.target.closest('[data-zoom]');
+    if (z) return drawExplore(Number(z.dataset.zoom));
+    const mk = e.target.closest && e.target.closest('.mk');
+    if (!mk) return;
+    const m = numberedMoments(s).find((x) => String(x.n) === mk.dataset.n);
+    const cap = $('#dExploreCap');
+    if (m && cap) cap.innerHTML = `<b style="color:${isLight(m.color) ? 'var(--text)' : m.color}">${m.n} · ${esc(m.timeLabel)}</b>${esc(m.label)}`;
+  });
   let heroJob = 0;
   const drawHero = async () => {
     const job = ++heroJob;
@@ -1507,7 +1574,7 @@ async function runWriteup(id, auto) {
   if (state.writeupBusy.has(id)) return;
   const s = await db.getSession(id);
   if (!s) return;
-  if (auto && !state.settings.apiKey) {
+  if (auto && (!state.settings.apiKey || !state.settings.featAutoAnalyse)) {
     renderWriteupBody(s);
     return;
   }
@@ -1831,11 +1898,15 @@ function meetingRows(meetings) {
 const stressClass = (e) => (e == null ? '' : e >= 10 ? 'hot' : e >= 5 ? 'warm' : 'cool');
 
 async function renderMeetings() {
+  const my = routeSeq;
+  if (!(await lockGate())) return;
   const all = (await db.allSessions()).filter((x) => x.type === 'meeting');
+  if (my !== routeSeq) return;
   const rows = meetingRows(all);
   const scored = rows.filter((r) => r.elevation != null);
   const ranked = [...scored].sort((a, b) => b.elevation - a.elevation);
   const people = peopleEffects(scored.map((r) => ({ elevation: r.elevation, attendees: r.attendees })));
+  if (state.hideNames == null) state.hideNames = !!state.settings.hideNamesDefault;
   const hide = !!state.hideNames;
   const alias = new Map(people.map((p, i) => [p.name, `Person ${String.fromCharCode(65 + (i % 26))}`]));
   const nm = (n) => (hide ? alias.get(n) || 'Someone' : n);
@@ -1985,8 +2056,10 @@ async function manualMeetingSheet(existing = null) {
 }
 
 async function renderManualMeeting(s) {
+  const my = routeSeq;
   const rest = state.settings.restingHr;
   const all = (await db.allSessions()).filter((x) => x.type === 'meeting');
+  if (my !== routeSeq) return;
   const ms = meetingStress(s, rest, deskBaseline(all, rest));
   view.innerHTML = `
     <div class="topbar"><a class="iconbtn" href="#/meetings" aria-label="Back">${icon('back')}</a>
@@ -2007,10 +2080,226 @@ async function renderManualMeeting(s) {
   });
 }
 
+/* ---------------- Helpers: reminders, weekly, info chips, lock ---------------- */
+
+const APP_URL = () => location.origin + location.pathname;
+
+function downloadIcs(evs, name) {
+  const ics = buildIcs(evs.map((e) => fixtureToEvent(e, APP_URL())), { alarmMin: Number(state.settings.reminderMin) || 15 });
+  downloadBlob(new Blob([ics], { type: 'text/calendar' }), name);
+}
+
+function detailInfoHtml(s) {
+  const q = dataQuality(s);
+  const wd = whoop.dayFor(s.startTs);
+  const qText = q ? { good: 'Good data', fair: 'Fair data', poor: 'Patchy data' }[q.level] : '';
+  const qTip = q ? `Heart rate ${q.hrPct}% of the time · HRV ${q.rrPct}%${q.lostMin ? ` · ${q.lostMin} min lost` : ''}` : '';
+  const chips = wd
+    ? [
+        wd.recovery != null ? `<span>Recovery<b>${wd.recovery}%</b></span>` : '',
+        wd.sleepPerf != null ? `<span>Sleep<b>${wd.sleepPerf}%</b></span>` : '',
+        wd.hrv != null ? `<span>HRV<b>${Math.round(wd.hrv)} ms</b></span>` : '',
+        wd.rhr != null ? `<span>Resting<b>${wd.rhr}</b></span>` : '',
+      ].join('')
+    : '';
+  if (!q && !chips) return '';
+  return `<div class="whoopday">${q ? `<span class="quality ${q.level}" title="${esc(qTip)}"><i></i>${qText} · ${q.hrPct}% HR · ${q.rrPct}% HRV</span>` : ''}${chips ? `${chips}<span class="muted">WHOOP that day</span>` : ''}</div>`;
+}
+
+function weeklyHtml(sessions) {
+  if (!state.settings.featWeekly) return '';
+  const since = Date.now() - 7 * 864e5;
+  const week = sessions.filter((x) => x.startTs >= since);
+  if (!week.length) return '';
+  const rest = state.settings.restingHr;
+  const stats = week.map((x) => ({ s: x, st: sessionStats(x, rest) }));
+  const recorded = stats.reduce((a, x) => a + (x.s.samples && x.s.samples.length ? x.st.durationMs : 0), 0);
+  const games = stats.filter((x) => (x.s.type === 'sport' || x.s.type === 'f1') && x.st.peakHr).sort((a, b) => b.st.peakHr - a.st.peakHr);
+  const meetings = meetingRows(week.filter((x) => x.type === 'meeting')).filter((r) => r.elevation != null);
+  const hardest = [...meetings].sort((a, b) => b.elevation - a.elevation)[0];
+  const calm = stats.filter((x) => x.st.avgTension != null).sort((a, b) => a.st.avgTension - b.st.avgTension)[0];
+  const locked = state.settings.lockOn && !isUnlocked();
+  const row = (k, v) => `<div class="wk-row"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+  return `<div class="weekcard"><div class="wk-head"><b>This week</b><span class="small muted">${week.length} session${week.length > 1 ? 's' : ''} · ${fmtDur(recorded)} recorded</span></div>
+    ${games[0] ? row('Biggest game', `${esc(displayTitle(games[0].s))} · peak ${games[0].st.peakHr} bpm`) : ''}
+    ${hardest && !locked ? row('Toughest meeting', `${esc(hardest.title)} · +${hardest.elevation} bpm`) : ''}
+    ${calm ? row('Calmest', `${esc(displayTitle(calm.s))} · stress ${calm.st.avgTension.toFixed(1)}`) : ''}
+  </div>`;
+}
+
+/** Returns true when meetings may be shown; otherwise renders the lock screen. */
+async function lockGate() {
+  const st = state.settings;
+  if (!st.lockOn || !st.lockPinHash || isUnlocked()) return true;
+  const my = routeSeq;
+  const bio = st.lockBioId && (await biometricAvailable());
+  if (my !== routeSeq) return false;
+  view.innerHTML = `<div class="topbar"><a class="iconbtn" href="#/" aria-label="Back">${icon('back')}</a><h1 class="grow">Meetings are locked</h1></div>
+    <div class="lockscreen">${icon('lock')}
+      <p class="muted" style="margin:0">Enter your PIN${bio ? ' or use your fingerprint' : ''} to see meeting stress.</p>
+      <input type="password" id="lkPin" inputmode="numeric" maxlength="8" autocomplete="off" aria-label="PIN"/>
+      <button class="btn primary" id="lkGo" style="min-width:220px">Unlock</button>
+      ${bio ? `<button class="btn" id="lkBio" style="min-width:220px">Use fingerprint</button>` : ''}
+    </div>`;
+  const done = () => {
+    markUnlocked(15);
+    route();
+  };
+  const tryPin = async () => {
+    if (await checkPin($('#lkPin').value, st.lockPinHash)) done();
+    else {
+      toast('Wrong PIN');
+      $('#lkPin').value = '';
+    }
+  };
+  $('#lkGo').addEventListener('click', tryPin);
+  $('#lkPin').addEventListener('keydown', (e) => e.key === 'Enter' && tryPin());
+  if (bio)
+    $('#lkBio').addEventListener('click', async () => {
+      try {
+        if (await verifyBiometric(st.lockBioId)) done();
+      } catch {
+        toast('Fingerprint not recognised. Use your PIN.');
+      }
+    });
+  setTimeout(() => $('#lkPin') && $('#lkPin').focus(), 50);
+  return false;
+}
+
+/* ---------------- Settings: apply, WHOOP sync, onboarding ---------------- */
+
+function applySettings() {
+  const st = state.settings;
+  configureAnalysis({
+    reactions: !!st.featReactions,
+    meetSkipMin: Number(st.meetSkipMin) || 0,
+    meetBaselineMin: Number(st.meetBaselineMin) || 90,
+    meetMinCoverage: (Number(st.meetMinCoverage) || 50) / 100,
+  });
+  configureFeeds({ bigChances: !!st.featBigChances, apiFootballKey: st.apiFootballKey || '', openf1User: st.openf1User || '', openf1Pass: st.openf1Pass || '' });
+  const sys = typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  const theme = st.theme === 'system' ? sys : st.theme || 'dark';
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.classList.toggle('large', st.textSize === 'large');
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', theme === 'light' ? '#f3f5f9' : '#0b0d12');
+}
+
+async function updatePersonalScale() {
+  if (!state.settings.featPersonalScale) {
+    state.scaleBpm = 15;
+  } else {
+    try {
+      state.scaleBpm = personalScale(await db.allSessions(), state.settings.restingHr);
+    } catch {
+      state.scaleBpm = 15;
+    }
+  }
+  configureAnalysis({ scaleBpm: state.scaleBpm });
+}
+
+async function whoopSync(force = false) {
+  const st = state.settings;
+  if (!st.whoopRelay || !whoop.isConnected()) return null;
+  if (!force && Date.now() - whoop.lastSync() < 6 * 3600e3) return null;
+  const r = await whoop.sync(st.whoopRelay);
+  if (st.whoopAutoRhr && r.latest && r.latest.rhr && r.latest.rhr !== st.restingHr) {
+    state.settings = { ...state.settings, restingHr: r.latest.rhr };
+    saveSettings(state.settings);
+  }
+  return r;
+}
+
+function renderWhoopCallback() {
+  const r = whoop.handleCallback(location.hash);
+  history.replaceState(null, '', '#/settings');
+  if (!r.ok) {
+    toast(`WHOOP connection failed (${r.error})`);
+    return renderSettings();
+  }
+  toast('WHOOP connected. Syncing your last 30 days…');
+  renderSettings();
+  whoopSync(true)
+    .then((x) => {
+      toast(x && x.latest ? `WHOOP synced · resting HR ${x.latest.rhr} · recovery ${x.latest.recovery}%` : 'WHOOP synced');
+      if (location.hash === '#/settings') renderSettings();
+    })
+    .catch((e) => toast(e.message));
+}
+
+function showOnboarding() {
+  const steps = [
+    {
+      t: 'Welcome to Pulse',
+      h: `<p>Pulse records your heart rate from your WHOOP strap while you watch your teams, race on with your drivers or sit in meetings, then shows exactly which moments moved you.</p>
+        <p class="small muted">Four quick steps. You can change everything later in Settings.</p>`,
+    },
+    {
+      t: 'Connect your strap',
+      h: `<p>In the WHOOP app turn on <b>Heart Rate Broadcast</b>. Then connect it here.</p>
+        <button class="btn primary block" id="obStrap">Connect strap</button>
+        <p class="small muted">You can do this later from the chip at the top of Home.</p>`,
+    },
+    {
+      t: 'Your resting heart rate',
+      h: `<p>Copy it from WHOOP (Recovery). Pulse uses it for stress and your calm zone.</p>
+        <input type="number" id="obRhr" min="30" max="120" inputmode="numeric" value="${esc(state.settings.restingHr)}" style="font-family:var(--num);font-size:28px;text-align:center"/>
+        <p class="small muted">Connect WHOOP in Settings later and this updates itself every day.</p>`,
+    },
+    {
+      t: 'What you follow',
+      h: `<p>${esc(state.follow.teams.map((t) => t.name).join(', '))}${state.follow.drivers.length ? ` and ${esc(state.follow.drivers.map((d) => d.name).join(', '))}` : ''}, plus every game in ${state.follow.competitions.length} competitions.</p>
+        <p class="small muted">Change it any time in the Following tab.</p>`,
+    },
+    {
+      t: 'Optional extras',
+      h: `<p><b>Google Calendar</b> scores every meeting automatically in Work day mode.<br><b>WHOOP account</b> adds recovery, sleep and resting HR.<br><b>AI analysis</b> writes the captions and your post.</p>
+        <p class="small muted">All three are in Settings, each with step-by-step help.</p>`,
+    },
+  ];
+  let i = 0;
+  const draw = () => {
+    const st = steps[i];
+    const m = showModal(`<div class="onb"><div class="step">Step ${i + 1} of ${steps.length}</div><div class="dots">${steps.map((_, j) => `<i class="${j <= i ? 'on' : ''}"></i>`).join('')}</div>
+      <h2>${st.t}</h2>${st.h}
+      <div class="actions"><button class="btn primary" id="obNext">${i === steps.length - 1 ? 'Start using Pulse' : 'Next'}</button>
+      ${i > 0 ? '<button class="btn ghost" id="obBack">Back</button>' : '<button class="btn ghost" id="obSkip">Skip setup</button>'}</div></div>`);
+    m.onclick = null;
+    const strapBtn = $('#obStrap', m);
+    if (strapBtn) strapBtn.addEventListener('click', () => connectStrap(false));
+    const finish = () => {
+      state.settings = { ...state.settings, onboarded: true };
+      saveSettings(state.settings);
+      hideModal();
+      route();
+    };
+    $('#obNext', m).addEventListener('click', () => {
+      const rhr = $('#obRhr', m);
+      if (rhr) {
+        const v = parseInt(rhr.value, 10);
+        if (v >= 30 && v <= 120) {
+          state.settings = { ...state.settings, restingHr: v };
+          saveSettings(state.settings);
+        }
+      }
+      if (i === steps.length - 1) return finish();
+      i++;
+      draw();
+    });
+    const back = $('#obBack', m);
+    if (back) back.addEventListener('click', () => ((i -= 1), draw()));
+    const skip = $('#obSkip', m);
+    if (skip) skip.addEventListener('click', finish);
+  };
+  draw();
+}
+
 /* ---------------- History ---------------- */
 
 async function renderHistory() {
+  const my = routeSeq;
   const all = await db.allSessions();
+  if (my !== routeSeq) return;
   const rest = state.settings.restingHr;
   for (const s of all) s.statsCache = sessionStats(s, rest);
   const f = state.historyFilter;
@@ -2191,88 +2480,131 @@ function renderFollowing() {
 
 function renderSettings() {
   const st = state.settings;
+  const tog = (key, title, sub = '') =>
+    `<div class="set-row"><div class="lbl"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div><label class="toggle"><input type="checkbox" data-set="${key}" ${st[key] ? 'checked' : ''} aria-label="${esc(title)}"/><i></i></label></div>`;
+  const num = (key, title, sub, min, max, unit = '') =>
+    `<div class="set-row"><div class="lbl"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div><span><input type="number" data-set="${key}" data-num="1" min="${min}" max="${max}" inputmode="numeric" value="${esc(st[key])}" aria-label="${esc(title)}"/>${unit ? ` <span class="small muted">${unit}</span>` : ''}</span></div>`;
+  const sel = (key, title, opts, sub = '') =>
+    `<div class="set-row"><div class="lbl"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div><select data-set="${key}" aria-label="${esc(title)}">${opts
+      .map(([v, l]) => `<option value="${v}" ${String(st[key]) === v ? 'selected' : ''}>${l}</option>`)
+      .join('')}</select></div>`;
+  const txt = (key, title, sub, ph = '', secret = false) =>
+    `<div class="set-row stack"><div class="lbl"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div><input type="${secret ? 'password' : 'text'}" data-set="${key}" placeholder="${esc(ph)}" value="${esc(st[key] || '')}" autocomplete="off" spellcheck="false" aria-label="${esc(title)}"/></div>`;
+  const group = (ic, title, rows) => `<div class="set-group"><h3>${icon(ic)} ${title}</h3><div class="set-card">${rows.join('')}</div></div>`;
+  const wConn = whoop.isConnected();
+  const wLast = whoop.lastSync();
+
   view.innerHTML = `
     <div class="topbar"><h1 class="grow">Settings</h1></div>
-    <div class="card">
-      <label class="field"><span>Resting heart rate (copy it from WHOOP)</span>
-        <input type="number" id="sRest" min="30" max="120" inputmode="numeric" value="${esc(st.restingHr)}"/></label>
-      <p class="small muted" style="margin:-6px 0 14px">Used for stress and your "calm" zone (resting + 15 bpm).</p>
-      <label class="field"><span>Stream delay (seconds)</span>
-        <input type="number" id="sDelay" min="0" max="600" inputmode="numeric" value="${esc(st.delaySec)}"/></label>
-      <p class="small muted" style="margin:-6px 0 0">How far your stream is behind live data (usually 30–90 s). During a game, tap <b>Sync stream</b> and type the match clock or lap. Pulse measures it and remembers it for next time.</p>
-    </div>
-    <div class="card">
-      <h3 style="margin-bottom:10px">AI write-up</h3>
-      <label class="field"><span>Anthropic API key</span>
-        <div style="display:flex;gap:8px"><input type="password" id="sKey" placeholder="sk-ant-…" autocomplete="off" spellcheck="false" value="${esc(st.apiKey)}"/>
-        <button class="btn small" id="sShow" type="button">Show</button></div></label>
-      <div class="banner info small" style="margin-bottom:12px">🔒 Your key is stored only on this device (in this browser) and is sent only to api.anthropic.com when you ask for a write-up. Each write-up costs a small amount on your Anthropic account (typically around one US cent). Get a key at console.anthropic.com.</div>
-      <label class="field" style="margin:0"><span>AI model</span><input type="text" id="sModel" value="${esc(st.model)}" spellcheck="false" autocomplete="off"/></label>
-    </div>
-    <div class="card">
-      <h3 style="margin-bottom:10px">${icon('cal')} Google Calendar</h3>
-      <p class="small muted" style="margin-top:0">Pulse reads your meetings (title, time, attendees), read-only, straight from Google to this phone. It's used to score every meeting automatically in Work day mode.</p>
-      <label class="field"><span>Google OAuth client ID</span><input type="text" id="sGcal" placeholder="1234-abc.apps.googleusercontent.com" spellcheck="false" autocomplete="off" value="${esc(st.gcalClientId || '')}"/></label>
-      <div class="row2"><button class="btn" id="sGcalGo" type="button">${gcalConnected() ? 'Reconnect' : 'Connect Google Calendar'}</button><button class="btn ghost" id="sGcalOff" type="button" ${gcalConnected() ? '' : 'disabled'}>Disconnect</button></div>
-      <p class="small muted" id="sGcalStatus" style="margin:8px 0 0">${gcalConnected() ? 'Connected.' : 'Not connected.'} <a href="https://github.com/joelmadeira26/stress-tracking-whoop#google-calendar-setup" target="_blank" rel="noopener">How to get a client ID (5 min)</a></p>
-    </div>
-    <button class="btn primary block" id="sSave">Save settings</button>
-
-    <div class="section-title"><h3>Demo sessions</h3></div>
-    <div class="card">
-      <p class="small muted" style="margin-top:0">Realistic sample sessions so you can see the full flow without the strap.</p>
-      <div style="display:grid;gap:8px">
-        ${Object.entries(SESSION_TYPES)
-          .filter(([k]) => DEMOS[k])
-          .map(([k, t]) => `<button class="btn block" data-demo="${k}">${icon(t.icon)} Load ${esc(t.label.toLowerCase())} demo</button>`)
-          .join('')}
-        <button class="btn block" id="demoMeetings">${icon('chat')} Load meeting stress demo (10 meetings)</button>
-      </div>
-    </div>
-
-    <div class="section-title"><h3>Your data</h3></div>
-    <div class="card" style="display:grid;gap:8px">
+    <div class="saved-note" id="savedNote">Changes save automatically</div>
+    ${group('heart', 'You', [
+      num('restingHr', 'Resting heart rate', st.whoopAutoRhr && wConn ? 'Updated daily from WHOOP' : 'Copy it from WHOOP (Recovery)', 30, 120, 'bpm'),
+      tog('featPersonalScale', 'Personal stress scale', `Scale stress to your own heart-rate range once you have 8+ recordings. Now: 1 stress point = ${state.scaleBpm || 15} bpm above resting.`),
+    ])}
+    ${group('gear', 'Display', [
+      sel('theme', 'Theme', [['dark', 'Dark'], ['light', 'Light'], ['system', 'Match my phone']], 'Charts and share images stay dark, like the reference.'),
+      sel('textSize', 'Text size', [['normal', 'Normal'], ['large', 'Large']]),
+    ])}
+    ${group('heart', 'Heart-rate strap', [
+      `<div class="set-row"><div class="lbl"><b>${esc(strapLabel())}</b><span>WHOOP → Device settings → Heart Rate Broadcast</span></div><button class="btn small" id="sStrap" type="button">${state.strapStatus === 'connected' ? 'Change' : 'Connect'}</button></div>`,
+    ])}
+    ${group('ball', 'Live sport data', [
+      num('delaySec', 'Stream delay', 'Set automatically when you use Sync stream', 0, 600, 's'),
+      tog('featBigChances', 'Big chances', 'Add close-range shots and woodwork as moments'),
+      num('reminderMin', 'Reminder', 'How long before kick-off calendar reminders alert you', 0, 180, 'min'),
+      `<div class="set-row"><div class="lbl"><b>Teams, competitions, drivers</b><span>${esc(state.follow.teams.length + ' teams · ' + state.follow.competitions.length + ' competitions · ' + state.follow.drivers.length + ' drivers')}</span></div><a class="btn small" href="#/following">Edit</a></div>`,
+      txt('apiFootballKey', 'Backup live scores (API-Football key)', 'Optional. Used only when ESPN is unavailable. Free key at dashboard.api-football.com.', 'Paste key', true),
+      txt('openf1User', 'OpenF1 account (real-time F1)', 'Optional. A paid OpenF1 account gives live race data; without it F1 moments fill in after the race.', 'Username'),
+      txt('openf1Pass', 'OpenF1 password', 'Stored only on this phone.', 'Password', true),
+    ])}
+    ${group('cal', 'Google Calendar', [
+      txt('gcalClientId', 'Google OAuth client ID', 'Read-only, straight from Google to this phone.', '1234-abc.apps.googleusercontent.com'),
+      `<div class="set-row"><div class="lbl"><b>Connection</b><span id="sGcalStatus">${gcalConnected() ? 'Connected' : 'Not connected'} · <a href="https://github.com/joelmadeira26/stress-tracking-whoop#google-calendar-setup" target="_blank" rel="noopener">setup guide</a></span></div>
+        <span><button class="btn small" id="sGcalGo" type="button">${gcalConnected() ? 'Reconnect' : 'Connect'}</button> <button class="btn small ghost" id="sGcalOff" type="button" ${gcalConnected() ? '' : 'disabled'}>Disconnect</button></span></div>`,
+      tog('calAutoRefresh', 'Keep calendar in sync', 'Refresh meetings every 15 minutes during a work day'),
+    ])}
+    ${group('heart', 'WHOOP account (official API)', [
+      txt('whoopRelay', 'Relay URL', 'Your Cloudflare relay that talks to WHOOP. See the setup guide.', 'https://pulse-whoop.yourname.workers.dev'),
+      `<div class="set-row"><div class="lbl"><b>Connection</b><span>${wConn ? `Connected${wLast ? ` · last sync ${new Date(wLast).toLocaleString()}` : ''}` : 'Not connected'} · <a href="https://github.com/joelmadeira26/stress-tracking-whoop/tree/main/relay#readme" target="_blank" rel="noopener">setup guide</a></span></div>
+        <span>${wConn ? '<button class="btn small" id="sWhoopSync" type="button">Sync now</button> <button class="btn small ghost" id="sWhoopOff" type="button">Disconnect</button>' : '<button class="btn small" id="sWhoopGo" type="button">Connect</button>'}</span></div>`,
+      tog('whoopAutoRhr', 'Update resting heart rate from WHOOP', 'Daily, from your latest recovery'),
+    ])}
+    ${group('chat', 'Meetings', [
+      num('meetSkipMin', 'Ignore the first minutes', 'Walking in or setting up isn’t stress', 0, 10, 'min'),
+      num('meetBaselineMin', 'Baseline window (work day)', 'Minutes before and after each meeting, outside other meetings', 30, 180, 'min'),
+      num('meetMinCoverage', 'Minimum heart-rate coverage', 'Skip meetings with less recorded data than this', 20, 100, '%'),
+      tog('hideNamesDefault', 'Hide names by default', 'People appear as Person A, B… on the stress board and in shares'),
+      tog('lockOn', 'Lock meetings', st.lockPinHash ? 'PIN set. Fingerprint optional below.' : 'You’ll set a PIN'),
+      `<div class="set-row"><div class="lbl"><b>Fingerprint / face unlock</b><span>${st.lockBioId ? 'Registered on this phone' : 'Unlock meetings without typing the PIN'}</span></div><button class="btn small" id="sBio" type="button" ${st.lockOn ? '' : 'disabled'}>${st.lockBioId ? 'Re-register' : 'Set up'}</button></div>`,
+    ])}
+    ${group('spark', 'AI analysis', [
+      txt('apiKey', 'Anthropic API key', 'Stored only on this phone, sent only to api.anthropic.com. About one US cent per analysis.', 'sk-ant-…', true),
+      txt('model', 'AI model', '', 'claude-sonnet-5-5'),
+      tog('featAutoAnalyse', 'Analyse automatically', 'Run the AI analysis when you save a session'),
+    ])}
+    ${group('star', 'Features', [
+      tog('featReactions', '“Your reaction” moments', 'Detect heart-rate spikes that no event explains'),
+      tog('featWeekly', 'Weekly summary on Home', ''),
+    ])}
+    <div class="set-group"><h3>${icon('list')} Demo sessions</h3><div class="set-card" style="padding:12px 16px;display:grid;gap:8px">
+      ${Object.entries(SESSION_TYPES)
+        .filter(([k]) => DEMOS[k])
+        .map(([k, t]) => `<button class="btn block" data-demo="${k}">${icon(t.icon)} Load ${esc(t.label.toLowerCase())} demo</button>`)
+        .join('')}
+      <button class="btn block" id="demoMeetings">${icon('chat')} Load meeting stress demo (10 meetings)</button>
+    </div></div>
+    <div class="set-group"><h3>${icon('list')} Your data</h3><div class="set-card" style="padding:12px 16px;display:grid;gap:8px">
       <button class="btn block" id="sExport">Export all data (JSON)</button>
+      <label class="btn block" for="sImport">Restore from an export…</label><input type="file" id="sImport" accept="application/json,.json" hidden/>
+      <button class="btn block" id="sOnboard">Run the setup guide again</button>
       <button class="btn danger block" id="sClear">Clear all data</button>
-      <p class="small muted" style="margin:4px 0 0">Everything lives on this device only (IndexedDB). Nothing is uploaded. Live football data: ESPN. F1 data: OpenF1 (unofficial, not associated with Formula 1).</p>
-    </div>
+      <p class="small muted" style="margin:4px 0 0">Everything lives on this phone (IndexedDB). Live football data: ESPN (backup: API-Football). F1: OpenF1 (unofficial, not associated with Formula 1).</p>
+    </div></div>
     <p class="note-estimate">${STRESS_NOTE}</p>
     <p class="small muted">Pulse · <a href="https://github.com/joelmadeira26/stress-tracking-whoop">source</a></p>
   `;
-  $('#sShow').addEventListener('click', () => {
-    const k = $('#sKey');
-    k.type = k.type === 'password' ? 'text' : 'password';
-    $('#sShow').textContent = k.type === 'password' ? 'Show' : 'Hide';
+
+  let noteTimer;
+  const saved = () => {
+    const n = $('#savedNote');
+    if (!n) return;
+    n.textContent = 'Saved ✓';
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => n && (n.textContent = 'Changes save automatically'), 1500);
+  };
+  const LIMITS = { restingHr: [30, 120], delaySec: [0, 600], reminderMin: [0, 180], meetSkipMin: [0, 10], meetBaselineMin: [30, 180], meetMinCoverage: [20, 100] };
+  $$('[data-set]').forEach((el) => {
+    el.addEventListener('change', async () => {
+      const key = el.dataset.set;
+      let v = el.type === 'checkbox' ? el.checked : el.value.trim();
+      if (el.dataset.num) {
+        v = parseInt(v, 10);
+        const [lo, hi] = LIMITS[key] || [0, 1e9];
+        if (!(v >= lo && v <= hi)) {
+          toast(`Choose between ${lo} and ${hi}`);
+          el.value = state.settings[key];
+          return;
+        }
+      }
+      if (key === 'lockOn' && v && !state.settings.lockPinHash) {
+        el.checked = false;
+        return setPinSheet(() => renderSettings());
+      }
+      if (key === 'model' && !v) v = 'claude-sonnet-5-5';
+      state.settings = { ...state.settings, [key]: v };
+      saveSettings(state.settings);
+      applySettings();
+      if (key === 'featPersonalScale' || key === 'restingHr') await updatePersonalScale();
+      if (key === 'lockOn' && v) markUnlocked(15);
+      saved();
+      if (['lockOn', 'featPersonalScale', 'whoopRelay'].includes(key)) renderSettings();
+    });
   });
-  $('#sSave').addEventListener('click', () => {
-    const rest = parseInt($('#sRest').value, 10);
-    const delay = parseInt($('#sDelay').value, 10);
-    if (!(rest >= 30 && rest <= 120)) return toast('Resting HR should be between 30 and 120');
-    if (!(delay >= 0 && delay <= 600)) return toast('Delay should be between 0 and 600 seconds');
-    state.settings = {
-      ...state.settings,
-      restingHr: rest,
-      delaySec: delay,
-      apiKey: $('#sKey').value.trim(),
-      gcalClientId: $('#sGcal').value.trim(),
-      model: $('#sModel').value.trim() || 'claude-sonnet-5-5',
-    };
-    saveSettings(state.settings);
-    toast('Settings saved');
-  });
-  $$('[data-demo]').forEach((b) =>
-    b.addEventListener('click', async () => {
-      const s = DEMOS[b.dataset.demo](state.settings.restingHr);
-      await db.saveSession(s);
-      toast('Demo loaded');
-      go(`#/session/${s.id}`);
-    }),
-  );
+
+  $('#sStrap').addEventListener('click', () => connectStrap(false));
   $('#sGcalGo').addEventListener('click', async () => {
-    const id = $('#sGcal').value.trim();
+    const id = (state.settings.gcalClientId || '').trim();
     if (!id) return toast('Paste your Google client ID first');
-    state.settings = { ...state.settings, gcalClientId: id };
-    saveSettings(state.settings);
     try {
       const now = Date.now();
       const evs = await calendarEvents(id, now - 12 * 3600e3, now + 24 * 3600e3, { interactive: true });
@@ -2288,6 +2620,55 @@ function renderSettings() {
     $('#sGcalStatus').textContent = 'Disconnected.';
     $('#sGcalOff').disabled = true;
   });
+  const wGo = $('#sWhoopGo');
+  if (wGo)
+    wGo.addEventListener('click', () => {
+      try {
+        whoop.login(state.settings.whoopRelay);
+      } catch (e) {
+        toast(e.message);
+      }
+    });
+  const wSync = $('#sWhoopSync');
+  if (wSync)
+    wSync.addEventListener('click', async () => {
+      wSync.disabled = true;
+      try {
+        const r = await whoopSync(true);
+        toast(r && r.latest ? `Synced · resting HR ${r.latest.rhr} · recovery ${r.latest.recovery}%` : 'Synced');
+        renderSettings();
+      } catch (e) {
+        toast(e.message);
+        wSync.disabled = false;
+      }
+    });
+  const wOff = $('#sWhoopOff');
+  if (wOff)
+    wOff.addEventListener('click', () => {
+      whoop.disconnect();
+      toast('WHOOP disconnected');
+      renderSettings();
+    });
+  $('#sBio').addEventListener('click', async () => {
+    if (!(await biometricAvailable())) return toast('This phone has no fingerprint or face unlock for websites');
+    try {
+      const id = await registerBiometric();
+      state.settings = { ...state.settings, lockBioId: id };
+      saveSettings(state.settings);
+      toast('Fingerprint unlock ready');
+      renderSettings();
+    } catch {
+      toast('Fingerprint setup was cancelled');
+    }
+  });
+  $$('[data-demo]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const x = DEMOS[b.dataset.demo](state.settings.restingHr);
+      await db.saveSession(x);
+      toast('Demo loaded');
+      go(`#/session/${x.id}`);
+    }),
+  );
   $('#demoMeetings').addEventListener('click', async () => {
     for (const m of demoMeetingWeek(state.settings.restingHr)) await db.saveSession(m);
     toast('10 demo meetings loaded');
@@ -2295,18 +2676,33 @@ function renderSettings() {
   });
   $('#sExport').addEventListener('click', async () => {
     const all = await db.allSessions();
-    const settings = { ...state.settings, apiKey: state.settings.apiKey ? '(not exported)' : '' };
-    const blob = new Blob([JSON.stringify({ app: 'Pulse', exportedAt: new Date().toISOString(), settings, follow: state.follow, sessions: all }, null, 1)], {
-      type: 'application/json',
-    });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `pulse-export-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    const secret = ['apiKey', 'apiFootballKey', 'openf1Pass', 'lockPinHash', 'lockBioId'];
+    const settings = Object.fromEntries(Object.entries(state.settings).filter(([k]) => !secret.includes(k)));
+    downloadBlob(new Blob([JSON.stringify({ app: 'Pulse', version: 2, exportedAt: new Date().toISOString(), settings, follow: state.follow, sessions: all })], { type: 'application/json' }), `pulse-export-${new Date().toISOString().slice(0, 10)}.json`);
   });
+  $('#sImport').addEventListener('change', async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    try {
+      const data = JSON.parse(await f.text());
+      if (data.app !== 'Pulse' || !Array.isArray(data.sessions)) throw new Error('Not a Pulse export');
+      for (const x of data.sessions) if (x && x.id && x.type && Array.isArray(x.samples)) await db.saveSession(x);
+      if (data.follow && Array.isArray(data.follow.teams)) {
+        state.follow = { ...state.follow, ...data.follow };
+        saveFollow(state.follow);
+      }
+      if (data.settings) {
+        state.settings = { ...state.settings, ...data.settings, onboarded: true };
+        saveSettings(state.settings);
+        applySettings();
+      }
+      toast(`Restored ${data.sessions.length} sessions`);
+      renderSettings();
+    } catch (err) {
+      toast(`Couldn't restore: ${err.message}`);
+    }
+  });
+  $('#sOnboard').addEventListener('click', showOnboarding);
   armButton($('#sClear'), 'Tap again to delete everything', async () => {
     await db.clearSessions();
     await db.clearLive();
@@ -2316,11 +2712,35 @@ function renderSettings() {
   });
 }
 
+function setPinSheet(done) {
+  const m = showModal(`<h2>Set a PIN for meetings</h2><p class="small muted">4–8 digits. It's stored only as a scrambled hash on this phone.</p>
+    <input type="password" id="pin1" inputmode="numeric" maxlength="8" placeholder="PIN" style="font-family:var(--num);font-size:26px;text-align:center;letter-spacing:.3em"/>
+    <input type="password" id="pin2" inputmode="numeric" maxlength="8" placeholder="Repeat PIN" style="font-family:var(--num);font-size:26px;text-align:center;letter-spacing:.3em;margin-top:8px"/>
+    <div class="actions"><button class="btn primary" id="pinSave">Lock meetings</button><button class="btn ghost" id="pinCancel">Cancel</button></div>`);
+  $('#pinCancel', m).addEventListener('click', hideModal);
+  $('#pinSave', m).addEventListener('click', async () => {
+    const a = $('#pin1', m).value;
+    const b = $('#pin2', m).value;
+    if (!/^\d{4,8}$/.test(a)) return toast('Use 4–8 digits');
+    if (a !== b) return toast("PINs don't match");
+    state.settings = { ...state.settings, lockOn: true, lockPinHash: await hashPin(a) };
+    saveSettings(state.settings);
+    markUnlocked(15);
+    hideModal();
+    toast('Meetings locked with your PIN');
+    done();
+  });
+}
+
 /* ---------------- Boot ---------------- */
 
 $$('#tabbar [data-icon]').forEach((el) => (el.innerHTML = icon(el.dataset.icon)));
 
 async function boot() {
+  applySettings();
+  updatePersonalScale();
+  if (typeof matchMedia === 'function') matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', applySettings);
+  whoopSync(false).catch(() => {});
   let live = null;
   try {
     live = await db.getLive();
@@ -2366,7 +2786,8 @@ async function boot() {
   } else if (location.hash === '#/live' || location.hash === '#/end') {
     location.hash = '#/';
   }
-  route();
+  await route();
+  if (!state.settings.onboarded && !/^#\/whoop/.test(location.hash)) showOnboarding();
 }
 boot();
 
@@ -2375,4 +2796,4 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 }
 
 // Exposed for automated tests / debugging.
-window.__pulse = { state, strap, db, aggregator, applyFeed };
+window.__pulse = { state, strap, db, aggregator, applyFeed, whoop };

@@ -14,6 +14,8 @@ import {
   findGaps,
 } from './analysis.js';
 
+import { dayFor } from './whoop.js';
+
 export const API_URL = 'https://api.anthropic.com/v1/messages';
 
 // Models that accept server-side refusal fallbacks (falls back to another model if one declines).
@@ -34,6 +36,7 @@ Return JSON with:
 - "writeup": 120 to 200 words in second person ("you"), plain sentences, paragraphs separated by a blank line: where heart rate and stress peaked and why; when you were calmest; how fast you recovered after the big moments; which moments hit hardest (your team or driver vs the opponent); end with one practical takeaway starting "Takeaway:".
 - "caption": a social media post in first person ("I tracked my heart rate and stress during ..."), at most 260 characters, mentioning the peak heart rate and the moment that caused it, then 3 to 6 relevant hashtags at the end (include #WHOOP). At most two emoji. No @mentions.
 
+If "whoopThatDay" is present, mention briefly when low recovery or poor sleep may explain a higher heart rate.
 "Stress" is Pulse's own 0-3 estimate from heart rate and HRV (not WHOOP's Stress Monitor): 0 calm, 1 mildly elevated, 2 clearly stressed, 3 very high.
 No medical claims. No markdown anywhere.`;
 
@@ -124,6 +127,8 @@ export function buildSessionData(session, restingHr) {
     if (session.feed && session.feed.myDriver) data.myDriver = session.feed.myDriver.full;
     if (session.feed && session.feed.result) data.myDriverResult = session.feed.result;
   }
+  const wd = dayFor(start);
+  if (wd) data.whoopThatDay = wd; // recovery %, resting HR, HRV, sleep performance %
   if (session.teams) {
     data.teams = { home: session.teams.home, away: session.teams.away, myTeam: session.teams[session.teams.mine] || null };
     data.finalScore = `${session.score.home}-${session.score.away}`;

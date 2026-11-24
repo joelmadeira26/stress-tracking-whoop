@@ -53,7 +53,11 @@ export const db = {
 const SETTINGS_KEY = 'pulse.settings';
 export function loadSettings() {
   try {
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') };
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    const saved = JSON.parse(raw || '{}');
+    // people who used Pulse before onboarding existed skip it
+    if (raw && saved.onboarded === undefined) saved.onboarded = true;
+    return { ...DEFAULT_SETTINGS, ...saved };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }

@@ -99,8 +99,23 @@ async function mockFeeds(ctx) {
 
 const browser = await chromium.launch();
 const apiCalls = [];
-async function newPhone(opts = {}) {
+// Settings save on 'change'; this sets a value and fires it like a real edit.
+async function setSetting(page, key, value) {
+  await page.evaluate(
+    ([k, v]) => {
+      const el = document.querySelector(`[data-set="${k}"]`);
+      if (el.type === 'checkbox') el.checked = !!v;
+      else el.value = v;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    },
+    [key, value],
+  );
+  await page.waitForTimeout(150);
+}
+
+async function newPhone(opts = {}, { onboarded = true } = {}) {
   const ctx = await browser.newContext({ ...devices['Pixel 7'], acceptDownloads: true, ...opts });
+  if (onboarded) await ctx.addInitScript(() => { if (!localStorage.getItem('pulse.settings')) localStorage.setItem('pulse.settings', JSON.stringify({ onboarded: true })); });
   await ctx.addInitScript(FAKE_BLE);
   await mockFeeds(ctx);
   await ctx.route('https://api.anthropic.com/**', async (route) => {
@@ -148,9 +163,10 @@ try {
   await page.screenshot({ path: 'tests/screens/01-home-phone.png', fullPage: true });
 
   await page.goto(BASE + '#/settings');
-  await page.fill('#sKey', 'sk-ant-test-key');
-  await page.fill('#sRest', '58');
-  await page.click('#sSave');
+  await page.waitForSelector('[data-set="apiKey"]');
+  await setSetting(page, 'apiKey', 'sk-ant-test-key');
+  await setSetting(page, 'restingHr', '58');
+  check('settings save automatically', (await page.evaluate(() => JSON.parse(localStorage.getItem('pulse.settings')))).restingHr === 58);
   check('no workout demo', (await page.locator('[data-demo="workout"]').count()) === 0);
   for (const k of ['sport', 'f1', 'meeting']) {
     await page.goto(BASE + '#/settings');
@@ -409,6 +425,9 @@ try {
   check('stress board ranks all meetings', (await lp.locator('.mbars li').count()) === 11);
   const vals = await lp.$$eval('.mb-val', (els) => els.map((e) => parseFloat(e.textContent)));
   check('ranked highest first', vals.every((v, i) => i === 0 || v <= vals[i - 1]));
+  check('names hidden by default (Person A…)', (await lp.locator('.mpeople li').first().innerText()).includes('Person A'));
+  await lp.click('#mHide + i');
+  await lp.waitForSelector('.mpeople li:has-text("Marco")');
   check('people leaderboard: Marco raises it most', (await lp.locator('.mpeople li').first().innerText()).includes('Marco'));
   await lp.screenshot({ path: 'tests/screens/13-meeting-board.png', fullPage: true });
   await lp.click('#mHide + i');
@@ -460,11 +479,11 @@ try {
   watch(wp);
   await wp.clock.install({ time: new Date(W0) });
   await wp.goto(BASE + '#/settings');
-  await wp.fill('#sGcal', 'test-client.apps.googleusercontent.com');
+  await wp.waitForSelector('[data-set="gcalClientId"]');
+  await setSetting(wp, 'gcalClientId', 'test-client.apps.googleusercontent.com');
   await wp.click('#sGcalGo');
   await wp.waitForFunction(() => /Connected\. 2 meetings/.test(document.querySelector('#sGcalStatus').textContent));
   check('Google Calendar connects with a bearer token', calAuth === 'Bearer test-token');
-  await wp.click('#sSave');
   await wp.goto(BASE + '#/meetings');
   await wp.click('#strapChip').catch(() => {});
   await wp.evaluate(() => window.__pulse.strap.pick());
@@ -485,6 +504,8 @@ try {
   await wp.waitForSelector('#eSave');
   await wp.click('#eSave');
   await wp.waitForSelector('.mbars li');
+  await wp.click('#mHide + i');
+  await wp.waitForSelector('.mpeople li:has-text("Marco")');
   const board = await wp.locator('.mbars').innerText();
   check('both calendar meetings scored automatically', board.includes('Budget review') && board.includes('Weekly sync'));
   const top = parseFloat(await wp.locator('.mb-val').first().innerText());
@@ -496,8 +517,137 @@ try {
   check('story line in the reference format', (await wp.locator('#dHero img').getAttribute('alt')).startsWith('Budget review with Marco, Priya (your clock, started'));
   await wp.screenshot({ path: 'tests/screens/16-calendar-meeting.png', fullPage: true });
 
+  /* ---------- 4c. Settings-driven features: onboarding, theme, WHOOP, lock, reminders, explore, backup, restore ---------- */
+  const octx = await newPhone({}, { onboarded: false });
+  const RELAY = 'https://pulse-whoop.test.workers.dev';
+  const today = new Date();
+  const iso = (d) => d.toISOString();
+  await octx.route(`${RELAY}/**`, async (route) => {
+    const u = new URL(route.request().url());
+    const ok = (b) => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(b) });
+    if (u.pathname === '/refresh') return ok({ access_token: 'AT2', refresh_token: 'RT2', expires_in: 3600 });
+    if (u.pathname === '/api/v2/recovery') return ok({ records: [{ cycle_id: 7, sleep_id: 'S1', score_state: 'SCORED', created_at: iso(today), score: { recovery_score: 41, resting_heart_rate: 52, hrv_rmssd_milli: 38.2 } }] });
+    if (u.pathname === '/api/v2/activity/sleep') return ok({ records: [{ id: 'S1', cycle_id: 7, nap: false, end: iso(today), score: { sleep_performance_percentage: 74 } }] });
+    if (u.pathname === '/api/v2/cycle') return ok({ records: [{ id: 7, start: iso(today), score: { strain: 9.4 } }] });
+    return route.fulfill({ status: 404, body: '{}' });
+  });
+  const op = await octx.newPage();
+  watch(op);
+  await op.goto(BASE);
+  await op.waitForSelector('.onb h2');
+  check('first launch shows the setup guide', (await op.locator('.onb h2').innerText()) === 'Welcome to Pulse');
+  await op.click('#obNext');
+  await op.click('#obNext');
+  await op.fill('#obRhr', '57');
+  await op.click('#obNext');
+  await op.click('#obNext');
+  await op.click('#obNext');
+  await op.waitForSelector('#modal', { state: 'hidden' });
+  const afterOnb = await op.evaluate(() => JSON.parse(localStorage.getItem('pulse.settings')));
+  check('setup guide saves resting HR and finishes', afterOnb.onboarded === true && afterOnb.restingHr === 57);
+
+  await op.goto(BASE + '#/settings');
+  await op.waitForSelector('[data-set="theme"]');
+  check('settings has every section', (await op.locator('.set-group h3').count()) >= 11);
+  await setSetting(op, 'theme', 'light');
+  await setSetting(op, 'textSize', 'large');
+  check('light theme + large text apply instantly', (await op.evaluate(() => document.documentElement.dataset.theme)) === 'light' && (await op.evaluate(() => document.documentElement.classList.contains('large'))));
+  await op.screenshot({ path: 'tests/screens/17-settings-light.png', fullPage: true });
+  await setSetting(op, 'theme', 'dark');
+  await setSetting(op, 'textSize', 'normal');
+  await setSetting(op, 'restingHr', '400');
+  check('out-of-range values are rejected', (await op.evaluate(() => JSON.parse(localStorage.getItem('pulse.settings')).restingHr)) === 57);
+
+  // WHOOP official API through the relay
+  await setSetting(op, 'whoopRelay', RELAY);
+  await op.goto(BASE + '#/whoop?at=AT1&rt=RT1&exp=1');
+  await op.waitForFunction(() => JSON.parse(localStorage.getItem('pulse.settings')).restingHr === 52, null, { timeout: 10000 });
+  check('WHOOP connect → sync → resting HR updated to 52', true);
+  const wd = await op.evaluate(() => window.__pulse.whoop.dayFor(Date.now()));
+  check('WHOOP day data stored (recovery 41, sleep 74, HRV 38)', wd && wd.recovery === 41 && wd.sleepPerf === 74 && Math.round(wd.hrv) === 38);
+  check('token refreshed and rotated', (await op.evaluate(() => JSON.parse(localStorage.getItem('pulse.whoop.tokens')).rt)) === 'RT2');
+
+  // Lock meetings with a PIN
+  await op.goto(BASE + '#/settings');
+  await op.waitForSelector('[data-set="lockOn"]');
+  await setSetting(op, 'lockOn', true);
+  await op.waitForSelector('#pin1');
+  await op.fill('#pin1', '2468');
+  await op.fill('#pin2', '2468');
+  await op.click('#pinSave');
+  await op.click('#demoMeetings');
+  await op.waitForSelector('.mbars li');
+  check('names hidden by default', (await op.locator('.mpeople').innerText()).includes('Person A'));
+  await op.reload();
+  await op.goto(BASE + '#/meetings');
+  await op.waitForSelector('#lkPin');
+  check('meetings locked after reopening', (await op.locator('.mbars').count()) === 0);
+  await op.fill('#lkPin', '0000');
+  await op.click('#lkGo');
+  await op.waitForTimeout(300);
+  check('wrong PIN keeps it locked', (await op.locator('#lkPin').count()) === 1);
+  await op.fill('#lkPin', '2468');
+  await op.click('#lkGo');
+  await op.waitForSelector('.mbars li');
+  check('right PIN unlocks the board', true);
+
+  // Reminders (.ics) from the watch sheet
+  await op.goto(BASE);
+  await op.waitForSelector('.fx');
+  await op.locator('.fx', { hasText: 'Qatar Grand Prix' }).locator('[data-watch]').click();
+  const [ics] = await Promise.all([op.waitForEvent('download'), op.click('#wRemind')]);
+  const icsText = fs.readFileSync(await ics.path(), 'utf8');
+  check('reminder file with an alert before the start', icsText.includes('BEGIN:VEVENT') && icsText.includes('TRIGGER:-PT15M') && icsText.includes('Qatar Grand Prix'));
+  await op.click('#wCancel');
+  check('weekly summary on Home', (await op.locator('.weekcard').count()) === 1);
+
+  // Explore chart + data quality on a session
+  await op.goto(BASE + '#/settings');
+  await op.click('[data-demo="f1"]');
+  await op.waitForSelector('#dExploreSvg svg');
+  check('data-quality badge', /Good data|Fair data/.test(await op.locator('.quality').innerText()));
+  const w1 = await op.evaluate(() => Number(document.querySelector('#dExploreSvg svg').getAttribute('width')));
+  await op.click('[data-zoom="2"]');
+  const w2 = await op.evaluate(() => Number(document.querySelector('#dExploreSvg svg').getAttribute('width')));
+  check(`explore zoom 2× (${w1} → ${w2})`, w2 === w1 * 2);
+  await op.locator('#dExploreSvg .mk').nth(2).dispatchEvent('click');
+  check('tapping a marker shows its caption', (await op.locator('#dExploreCap').innerText()).startsWith('3 ·'));
+  await op.screenshot({ path: 'tests/screens/18-explore.png', fullPage: true });
+
+  // Export → clear → restore
+  await op.goto(BASE + '#/settings');
+  await op.waitForSelector('#sExport');
+  const [exp] = await Promise.all([op.waitForEvent('download'), op.click('#sExport')]);
+  const expPath = await exp.path();
+  const exported = JSON.parse(fs.readFileSync(expPath, 'utf8'));
+  check('export leaves secrets out', !('lockPinHash' in exported.settings) && !('apiKey' in exported.settings) && exported.sessions.length >= 11);
+  await op.click('#sClear');
+  await op.click('#sClear');
+  await op.waitForTimeout(300);
+  await op.setInputFiles('#sImport', expPath);
+  await op.waitForFunction(async () => (await window.__pulse.db.allSessions()).length >= 11);
+  check('restore brings everything back', true);
+
+  // Backup live score when ESPN fails
+  const bctx = await newPhone();
+  await bctx.route('https://site.api.espn.com/**/summary**', (route) => route.fulfill({ status: 503, body: 'down' }));
+  await bctx.route('https://v3.football.api-sports.io/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ response: [{ teams: { home: { name: 'Sporting CP' }, away: { name: 'Manchester United' } }, goals: { home: 3, away: 1 }, fixture: { status: { short: '2H', elapsed: 71 } } }] }) }),
+  );
+  const bp = await bctx.newPage();
+  watch(bp);
+  await bp.goto(BASE);
+  await bp.evaluate(() => localStorage.setItem('pulse.settings', JSON.stringify({ onboarded: true, apiFootballKey: 'test-key' })));
+  await bp.reload();
+  await bp.waitForSelector('.fx.is-live');
+  await bp.click('.fx.is-live [data-watch]');
+  await bp.click('#wGo');
+  await bp.waitForFunction(() => /backup source/.test((document.querySelector('#feedLine') || {}).textContent || ''), null, { timeout: 10000 });
+  check('ESPN down → live score from API-Football backup (3–1)', (await bp.locator('#liveScore').innerText()) === '3–1');
+
   /* ---------- 5. Desktop widths ---------- */
   const dctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await dctx.addInitScript(() => localStorage.getItem('pulse.settings') || localStorage.setItem('pulse.settings', JSON.stringify({ onboarded: true })));
   await dctx.addInitScript(FAKE_BLE);
   await mockFeeds(dctx);
   const dp = await dctx.newPage();

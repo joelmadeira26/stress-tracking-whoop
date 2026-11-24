@@ -120,11 +120,39 @@ export const SESSION_TYPES = {
 export const FREE_TAG = { key: 'free', label: 'Note', color: COLORS.free };
 
 export const DEFAULT_SETTINGS = {
+  // You
   restingHr: 60,
+  featPersonalScale: true, // stress scaled to your own heart-rate range once there's enough history
+  // Live data
+  delaySec: 60, // stream delay behind the live data feed (streams are usually 30–90 s behind)
+  featBigChances: true,
+  apiFootballKey: '', // optional backup source for live scores
+  openf1User: '', // optional paid OpenF1 account for real-time F1 data
+  openf1Pass: '',
+  reminderMin: 15,
+  // Calendar & WHOOP
+  gcalClientId: '',
+  calAutoRefresh: true,
+  whoopRelay: '', // URL of your Cloudflare relay for WHOOP's official API
+  whoopAutoRhr: true,
+  // Meetings
+  meetSkipMin: 2, // ignore the first minutes of a meeting (walking in, setting up)
+  meetBaselineMin: 90,
+  meetMinCoverage: 50,
+  hideNamesDefault: true,
+  lockOn: false,
+  lockPinHash: '',
+  lockBioId: '',
+  // AI
   apiKey: '',
   model: 'claude-sonnet-5-5',
-  gcalClientId: '',
-  delaySec: 60, // stream delay behind the live data feed (streams are usually 30–90 s behind)
+  featAutoAnalyse: true,
+  // App
+  featReactions: true,
+  featWeekly: true,
+  theme: 'dark', // dark | light | system
+  textSize: 'normal', // normal | large
+  onboarded: false,
 };
 
 /* ---------------- Following ---------------- */
@@ -175,6 +203,7 @@ export const ICONS = {
   star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z" stroke-linejoin="round"/></svg>',
   tv: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/></svg>',
   cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 9.5h17M8 3v4M16 3v4" stroke-linecap="round"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 018 0v3"/></svg>',
   spark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>',
   heart: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.5-4.6-9.5-9.4C1.2 8.2 3.4 4.5 7 4.5c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.6 0 5.8 3.7 4.5 7.1C19.5 16.4 12 21 12 21z"/></svg>',
   home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l9-7 9 7v9h-6v-6H9v6H3z" stroke-linejoin="round"/></svg>',

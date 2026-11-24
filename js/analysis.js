@@ -160,6 +160,45 @@ export function baselineRmssd(session) {
  *   HRV part = 1.5 × log2(baseline RMSSD / current RMSSD) + 1, clamped 0–3 (only with RR data)
  *   tension  = average of available parts
  */
+/** Tunables set from Settings (kept here so every calculation uses the same values). */
+export const STRESS = { scaleBpm: 15, reactions: true, meetSkipMin: 2, meetBaselineMin: 90, meetMinCoverage: 0.5 };
+export function configureAnalysis(opts) {
+  Object.assign(STRESS, opts);
+}
+
+/**
+ * Personal stress scale: bpm above resting that counts as "1" on the 0–3 scale.
+ * Default 15; with ≥ 8 recorded sessions it becomes half of your typical high (90th percentile)
+ * heart-rate rise, clamped 8–25 bpm.
+ */
+export function personalScale(sessions, restingHr) {
+  const rises = [];
+  for (const s of sessions) {
+    if (!s.samples || s.samples.length < 600) continue;
+    const b = bucketHr(s.samples, s.startTs, sessionEnd(s), 60000).filter((x) => x.avg != null).map((x) => x.avg - restingHr);
+    rises.push(...b);
+  }
+  if (sessions.filter((s) => s.samples && s.samples.length >= 600).length < 8 || rises.length < 200) return 15;
+  rises.sort((a, b) => a - b);
+  const p90 = rises[Math.floor(rises.length * 0.9)];
+  return Math.round(clamp(p90 / 2, 8, 25) * 10) / 10;
+}
+
+/** How trustworthy a recording is: heart-rate coverage, beat-to-beat (HRV) coverage, gaps. */
+export function dataQuality(session) {
+  const samples = session.samples || [];
+  if (!samples.length) return null;
+  const start = session.startTs;
+  const end = sessionEnd(session);
+  const secs = Math.max(1, Math.round((end - start) / 1000));
+  const hr = Math.min(1, samples.length / secs);
+  const rr = samples.filter((x) => x.rr && x.rr.length).length / samples.length;
+  const gaps = findGaps(samples, start, end);
+  const lostMin = Math.round(gaps.reduce((a, g) => a + g.end - g.start, 0) / 60000);
+  const level = hr >= 0.9 && rr >= 0.6 ? 'good' : hr >= 0.7 ? 'fair' : 'poor';
+  return { level, hrPct: Math.round(hr * 100), rrPct: Math.round(rr * 100), gaps: gaps.length, lostMin };
+}
+
 export function tensionSeries(session, restingHr, { stepMs = 30 * SEC, windowMs = 60 * SEC } = {}) {
   const samples = session.samples;
   const start = session.startTs;
@@ -186,7 +225,7 @@ export function tensionSeries(session, restingHr, { stepMs = 30 * SEC, windowMs 
       continue;
     }
     const avg = sum / n;
-    const hrPart = clamp((avg - restingHr) / 15, 0, 3);
+    const hrPart = clamp((avg - restingHr) / STRESS.scaleBpm, 0, 3);
     let hrvPart = null;
     if (base) {
       const cur = rmssd(rr);
@@ -484,6 +523,7 @@ export function chartDomain(session, now) {
  * Returns up to 3: { key, t (start of the rise), bpm, rise, label }.
  */
 export function detectReactions(session, restingHr) {
+  if (!STRESS.reactions) return [];
   const samples = session.samples || [];
   if (samples.length < 120) return [];
   const start = session.startTs;
@@ -642,8 +682,9 @@ export function meetingStress(session, restingHr, deskBaseline = null) {
   const samples = session.samples || [];
   const startM = (session.phases && session.phases.meetingStart) || session.startTs;
   const endM = sessionEnd(session);
+  const skip = (STRESS.meetSkipMin || 0) * 60000;
   const pre = samples.filter((x) => x.t < startM && x.t >= startM - 10 * 60000);
-  const during = samples.filter((x) => x.t >= startM && x.t <= endM);
+  const during = samples.filter((x) => x.t >= startM + skip && x.t <= endM);
   if (during.length < 30) return { elevation: null, baseline: null, baselineSource: null, avgHr: null, durationMin: Math.round((endM - startM) / 60000) };
   const avg = (arr) => arr.reduce((a, x) => a + x.hr, 0) / arr.length;
   let baseline;
@@ -753,7 +794,7 @@ export function minuteSeries(samples) {
  * the meeting needs heart rate for ≥ 50 % of its minutes.
  * Returns [{ event, dbpm, baseline, baseStd, z, elevatedShare, coverage, avgHr, peakHr, minutes }]
  */
-export function scoreDayMeetings(samples, events, { baselineMinutes = 90, minBaseline = 30, minCoverage = 0.5 } = {}) {
+export function scoreDayMeetings(samples, events, { baselineMinutes = STRESS.meetBaselineMin, minBaseline = 30, minCoverage = STRESS.meetMinCoverage, skipMinutes = STRESS.meetSkipMin } = {}) {
   const hr = minuteSeries(samples);
   const busy = new Set();
   for (const e of events) for (let m = Math.floor(e.start / 60000); m < Math.ceil(e.end / 60000); m++) busy.add(m);
@@ -767,9 +808,10 @@ export function scoreDayMeetings(samples, events, { baselineMinutes = 90, minBas
     const lo = Math.floor(e.start / 60000);
     const hi = Math.ceil(e.end / 60000) - 1;
     const mins = hi - lo + 1;
+    const from = Math.min(hi, lo + (skipMinutes || 0));
     const inMeeting = [];
-    for (let m = lo; m <= hi; m++) if (hr.has(m)) inMeeting.push(hr.get(m));
-    if (inMeeting.length < Math.max(1, minCoverage * mins)) continue;
+    for (let m = from; m <= hi; m++) if (hr.has(m)) inMeeting.push(hr.get(m));
+    if (inMeeting.length < Math.max(1, minCoverage * (hi - from + 1))) continue;
     const base = [];
     for (let m = lo - baselineMinutes; m < lo; m++) if (!busy.has(m) && hr.has(m)) base.push(hr.get(m));
     for (let m = hi + 1; m <= hi + baselineMinutes; m++) if (!busy.has(m) && hr.has(m)) base.push(hr.get(m));

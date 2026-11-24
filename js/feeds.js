@@ -13,11 +13,19 @@ export class FeedError extends Error {
   }
 }
 
-export async function getJSON(url, { timeout = 15000, fetchImpl = fetch } = {}) {
+/** Options from Settings. */
+export const FEEDS = { bigChances: true, apiFootballKey: '', openf1User: '', openf1Pass: '' };
+export function configureFeeds(opts) {
+  Object.assign(FEEDS, opts);
+}
+
+export async function getJSON(url, { timeout = 15000, fetchImpl = fetch, headers } = {}) {
   const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
   const timer = ctl && setTimeout(() => ctl.abort(), timeout);
   try {
-    const res = await fetchImpl(url, ctl ? { signal: ctl.signal } : {});
+    const init = ctl ? { signal: ctl.signal } : {};
+    if (headers) init.headers = headers;
+    const res = await fetchImpl(url, init);
     if (!res.ok) throw new FeedError(`HTTP ${res.status}`, res.status);
     return await res.json();
   } catch (e) {
@@ -289,7 +297,7 @@ function playerAndTeam(text) {
  * Parse an ESPN soccer summary into status, score, phases (feed times) and moments.
  * Moment: { fid, ft (ms, real time of the event), est (time estimated), cat, side?, label }
  */
-export function parseEspnSummary(d, { mine = null } = {}) {
+export function parseEspnSummary(d, { mine = null, bigChances = true } = {}) {
   const comp = d.header && d.header.competitions && d.header.competitions[0];
   const comps = (comp && comp.competitors) || [];
   const H = comps.find((c) => c.homeAway === 'home');
@@ -434,6 +442,7 @@ export function parseEspnSummary(d, { mine = null } = {}) {
     seen.add(label);
     const tm = timeOf({ ...play, clock, period: play.period });
     if (!tm) continue;
+    if (cat === 'chance' && !bigChances) continue;
     moments.push({ fid: `c${c.sequence ?? play.id ?? label}`, ...tm, cat, label, detail: text });
   }
 
@@ -463,7 +472,56 @@ export function parseEspnSummary(d, { mine = null } = {}) {
 
 export async function syncEspn(event, opts = {}) {
   const d = await getJSON(`${ESPN}/${event.league || 'all'}/summary?event=${event.id}`, opts);
-  return parseEspnSummary(d, { mine: event.mine || null });
+  return parseEspnSummary(d, { mine: event.mine || null, bigChances: FEEDS.bigChances });
+}
+
+/* ---------------- Backup live score: API-Football (optional key) ---------------- */
+
+const norm = (x) =>
+  String(x || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\b(fc|cf|sc|cp|afc|ac|sv|fk|club|de|the)\b/g, '')
+    .replace(/[^a-z0-9]/g, '');
+const sameTeam = (a, b) => {
+  const x = norm(a);
+  const y = norm(b);
+  return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
+};
+
+/** Live score/status for an ESPN event from API-Football, when ESPN is down. */
+export async function backupLiveScore(event, fetchImpl = fetch) {
+  if (!FEEDS.apiFootballKey || event.source !== 'espn') return null;
+  const j = await getJSON('https://v3.football.api-sports.io/fixtures?live=all', { fetchImpl, headers: { 'x-apisports-key': FEEDS.apiFootballKey } });
+  const names = (t) => [t.name, t.short].filter(Boolean);
+  const fx = (j.response || []).find(
+    (f) => names(event.home).some((n) => sameTeam(n, f.teams.home.name)) && names(event.away).some((n) => sameTeam(n, f.teams.away.name)),
+  );
+  if (!fx) return null;
+  const st = fx.fixture.status || {};
+  const done = ['FT', 'AET', 'PEN'].includes(st.short);
+  return {
+    score: { home: fx.goals.home ?? 0, away: fx.goals.away ?? 0 },
+    status: { state: done ? 'post' : 'in', detail: done ? 'FT' : st.short === 'HT' ? 'HT' : `${st.elapsed ?? ''}'${st.extra ? `+${st.extra}` : ''}`, completed: done },
+  };
+}
+
+/* ---------------- OpenF1 paid account (real-time data) ---------------- */
+
+let of1Token = null;
+async function openf1Headers(fetchImpl = fetch) {
+  if (!FEEDS.openf1User || !FEEDS.openf1Pass) return undefined;
+  if (of1Token && of1Token.exp > Date.now() + 60000) return { Authorization: `Bearer ${of1Token.token}` };
+  const res = await fetchImpl('https://api.openf1.org/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ username: FEEDS.openf1User, password: FEEDS.openf1Pass }).toString(),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || !j.access_token) throw new FeedError('OpenF1 sign-in failed. Check your OpenF1 details in Settings.', res.status);
+  of1Token = { token: j.access_token, exp: Date.now() + (Number(j.expires_in) || 3600) * 1000 };
+  return { Authorization: `Bearer ${of1Token.token}` };
 }
 
 /* ================= F1 parsing ================= */
@@ -663,7 +721,8 @@ function titleCaseKind(k) {
 
 export async function syncF1(event, myLast, opts = {}) {
   const k = event.sessionKey;
-  const q = (ep, extra = '') => getJSON(`${OF1}/${ep}?session_key=${k}${extra}`, opts).catch((e) => {
+  const headers = await openf1Headers(opts.fetchImpl).catch(() => undefined);
+  const q = (ep, extra = '') => getJSON(`${OF1}/${ep}?session_key=${k}${extra}`, { ...opts, headers }).catch((e) => {
     if (e.status === 404) return [];
     throw e;
   });

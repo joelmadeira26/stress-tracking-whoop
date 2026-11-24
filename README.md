@@ -60,6 +60,36 @@ Notes:
 - Google sign-ins last an hour. When one expires, Pulse asks you to tap **Connect** again.
 - On a company Google Workspace account, your admin may need to allow the app.
 
+## Settings (everything can be changed or switched off)
+Settings save automatically and are grouped as follows:
+- **You:** resting heart rate, and a personal stress scale that adapts to your own heart-rate range after 8+ recordings.
+- **Display:** dark, light or match-my-phone; normal or large text.
+- **Heart-rate strap**
+- **Live sport data:**
+  - stream delay;
+  - big chances on/off;
+  - calendar reminder lead time;
+  - backup live scores (API-Football key);
+  - OpenF1 account for real-time F1.
+- **Google Calendar:** client ID, connect, keep in sync.
+- **WHOOP account (official API):** relay URL, connect, sync now, resting HR updated daily. See [relay/README.md](relay/README.md).
+- **Meetings:**
+  - ignore the first minutes;
+  - baseline window;
+  - minimum coverage;
+  - hide names by default;
+  - PIN lock with optional fingerprint/face unlock.
+- **AI analysis:** key, model, analyse automatically.
+- **Features:** "Your reaction" moments, weekly summary.
+- **Demos, export, restore from an export, setup guide, clear all data.**
+
+Also new:
+- a first-launch setup guide;
+- a data-quality badge and WHOOP recovery/sleep/HRV chips on each session;
+- an explorable chart (tap markers, zoom 1×/2×/4×);
+- a weekly summary;
+- "Remind me" / "Add to calendar" (.ics with an alert) for your games and races.
+
 ## Features
 - **Live**: big BPM, session clock (football match minute: 1'–45', 45+x', HT, 46'–90', 90+x', FT), live chart, thumb-sized tag buttons, free-text tags, Undo, and End (tap twice to confirm).
 - **Session types**: *Football* and *F1* with automatic moments from live data, *Other match* (tag moments yourself), and *Meeting* (attendees, baseline, "I'm speaking" band).
