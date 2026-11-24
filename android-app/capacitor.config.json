@@ -1,0 +1,18 @@
+{
+  "appId": "io.github.joelmadeira26.pulse",
+  "appName": "Pulse",
+  "webDir": "www",
+  "server": {
+    "url": "https://joelmadeira26.github.io/stress-tracking-whoop/",
+    "androidScheme": "https",
+    "errorPath": "offline.html"
+  },
+  "android": {
+    "backgroundColor": "#0b0d12",
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "CapacitorHttp": { "enabled": true },
+    "BluetoothLe": { "displayStrings": { "scanning": "Looking for your WHOOP…", "cancel": "Cancel", "availableDevices": "Heart-rate devices", "noDeviceFound": "No strap found. Is Heart Rate Broadcast on?" } }
+  }
+}

@@ -81,9 +81,9 @@ Settings save automatically and are grouped as follows:
 - **Live sport data:**
   - stream delay;
   - big chances on/off;
-  - calendar reminder lead time;
   - backup live scores (API-Football free tier, capped at 90 calls a day).
-- **Google Calendar:** client ID, connect, keep in sync.
+- **Android app:** download link (or confirmation that you're in the app).
+- **Calendar:** private iCal address (for the app), your email, Google client ID (for Chrome), connect, keep in sync.
 - **WHOOP account (official API):** relay URL, connect, sync now, resting HR updated daily. See [relay/README.md](relay/README.md).
 - **Meetings:**
   - ignore the first minutes;
@@ -91,16 +91,15 @@ Settings save automatically and are grouped as follows:
   - minimum coverage;
   - hide names by default;
   - PIN lock with optional fingerprint/face unlock.
-- **AI analysis:** key, model, analyse automatically.
+- **AI analysis:** key, model (Haiku / Sonnet / Opus cards with cost per analysis), depth (quick or thorough), analyse automatically.
 - **Features:** "Your reaction" moments, weekly summary.
 - **Demos, export, restore from an export, setup guide, clear all data.**
 
 Also new:
 - a first-launch setup guide;
 - a data-quality badge and WHOOP recovery/sleep/HRV chips on each session;
-- an explorable chart (tap markers, zoom 1×/2×/4×);
-- a weekly summary;
-- "Remind me" / "Add to calendar" (.ics with an alert) for your games and races.
+- an explorable chart (tap markers, zoom 1×/2×/4× or pinch). The rest of the app doesn't zoom or scroll sideways;
+- a weekly summary.
 
 ## Features
 - **Live**: big BPM, session clock (football match minute: 1'–45', 45+x', HT, 46'–90', 90+x', FT), live chart, thumb-sized tag buttons, free-text tags, Undo, and End (tap twice to confirm).
@@ -147,6 +146,38 @@ podcast: {
 
 The Start button, live tag buttons, history filter and chart all pick it up automatically. For a demo, add a generator to `DEMOS` in `js/demo.js`.
 
+## Android app
+Pulse also comes as a native Android app. It's the same app, with three differences:
+- **Recording continues with the screen off.** A "Pulse is recording" notification shows while a session runs (Android foreground service, connected-device type).
+- **Bluetooth is native,** so you don't need Chrome's Web Bluetooth.
+- **It installs from the site:** Settings → Android app → *Download Pulse for Android*, or https://joelmadeira26.github.io/stress-tracking-whoop/download/pulse.apk.
+
+### Install
+1. Download the APK on your phone and open it.
+2. When asked, allow **Install unknown apps** for Chrome, then tap Install.
+3. Open Pulse and allow Nearby devices (Bluetooth) and Notifications.
+4. To move existing sessions from Chrome: in Chrome open Settings → *Export all data*; in the app, Settings → *Restore from an export*. Each app keeps its own storage.
+5. Calendar in the app: Google sign-in isn't allowed inside apps, so paste your calendar's **private iCal address** (Google Calendar → Settings → your calendar → *Secret address in iCal format*) into Settings → Calendar.
+
+### How it works
+- The app (`android-app/`, Capacitor) loads the live site, so every web update reaches the app without reinstalling.
+- If you're offline, it shows `android-app/www/offline.html`.
+- `js/native.js` is the bridge: it detects the app and starts and stops the recording service.
+- In the app, `js/ble.js` uses `@capacitor-community/bluetooth-le` instead of Web Bluetooth.
+- `MainActivity.java` stops Android pausing the page's timers in the background.
+
+### Rebuild the APK
+You need JDK 21 and the Android SDK (platform 36, build-tools 36) with `ANDROID_HOME` set.
+```
+cd android-app && npm install && npx cap sync android
+cd android && ./gradlew assembleDebug
+cp app/build/outputs/apk/debug/app-debug.apk ../../download/pulse.apk
+```
+The APK is signed with `android-app/keystore/pulse-debug.keystore`, which is committed on purpose: every new build then installs over the old one without losing data.
+- The trade-off: anyone could sign an APK with that key.
+- That only matters for distribution beyond your own phone.
+- Before publishing on the Play Store, create a private release key.
+
 ## Files
 ```
 index.html               app shell
@@ -154,7 +185,9 @@ css/styles.css           design
 js/config.js             session types, tags, moment categories, competitions, default follows
 js/feeds.js              live data: ESPN football + OpenF1 (fixtures, parsing, sync)
 js/hr.js                 0x2A37 heart-rate parser + 1 Hz aggregator
-js/ble.js                Web Bluetooth connection + auto-reconnect
+js/ble.js                Web Bluetooth / native Bluetooth connection + auto-reconnect
+js/native.js             Android app bridge (recording service, native helpers)
+js/icalfeed.js           private iCal address reader (recurring meetings, time zones)
 js/analysis.js           buckets, tension, match clock, stats
 js/chart.js              chart (one drawing routine → SVG on screen, canvas for PNG)
 js/export.js             PNG export + Web Share
@@ -163,6 +196,7 @@ js/db.js                 IndexedDB storage
 js/demo.js               demo sessions
 js/app.js                screens, routing, live session
 sw.js, manifest.webmanifest, icons/   PWA
+android-app/             native Android app (Capacitor) · download/pulse.apk = built app
 tests/                   unit tests (node) + browser end-to-end test (Playwright)
 ```
 

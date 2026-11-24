@@ -45,7 +45,7 @@ const FAKE_BLE = () => {
     removeEventListener() {},
   };
   window.__fakeDevice = device;
-  Object.defineProperty(navigator, 'bluetooth', { value: { async requestDevice(opts) { window.__lastRequest = opts; return device; } } });
+  Object.defineProperty(navigator, 'bluetooth', { configurable: true, value: { async requestDevice(opts) { window.__lastRequest = opts; return device; } } });
 };
 
 const MOCK_TEXT =
@@ -591,13 +591,12 @@ try {
   await op.waitForSelector('.mbars li');
   check('right PIN unlocks the board', true);
 
-  // Reminders (.ics) from the watch sheet
+  // Calendar reminders were removed on request
   await op.goto(BASE);
   await op.waitForSelector('.fx');
   await op.locator('.fx', { hasText: 'Qatar Grand Prix' }).locator('[data-watch]').click();
-  const [ics] = await Promise.all([op.waitForEvent('download'), op.click('#wRemind')]);
-  const icsText = fs.readFileSync(await ics.path(), 'utf8');
-  check('reminder file with an alert before the start', icsText.includes('BEGIN:VEVENT') && icsText.includes('TRIGGER:-PT15M') && icsText.includes('Qatar Grand Prix'));
+  await op.waitForSelector('#wGo');
+  check('no "Remind me" / "Add to calendar" anywhere', (await op.locator('#wRemind, #remindAll').count()) === 0);
   await op.click('#wCancel');
   check('weekly summary on Home', (await op.locator('.weekcard').count()) === 1);
 
@@ -644,6 +643,70 @@ try {
   await bp.click('#wGo');
   await bp.waitForFunction(() => /backup source/.test((document.querySelector('#feedLine') || {}).textContent || ''), null, { timeout: 10000 });
   check('ESPN down → live score from API-Football backup (3–1)', (await bp.locator('#liveScore').innerText()) === '3–1');
+
+  /* ---------- 4d. Inside the Android app (Capacitor bridge simulated) ---------- */
+  const nctx = await newPhone();
+  await nctx.addInitScript(() => {
+    const SVC = '0000180d-0000-1000-8000-00805f9b34fb';
+    const CHR = '00002a37-0000-1000-8000-00805f9b34fb';
+    const nat = (window.__nat = { calls: [], listeners: {}, fg: null });
+    const BluetoothLe = {
+      initialize: async (o) => nat.calls.push(['init', o]),
+      isEnabled: async () => ({ value: true }),
+      requestEnable: async () => {},
+      requestDevice: async (o) => (nat.calls.push(['request', o]), { deviceId: 'AA:BB', name: 'WHOOP 4C0FFEE' }),
+      addListener: async (k, cb) => ((nat.listeners[k] = cb), { remove: async () => delete nat.listeners[k] }),
+      connect: async () => nat.calls.push(['connect']),
+      startNotifications: async () => {
+        nat.calls.push(['notify']);
+        setInterval(() => nat.listeners[`notification|AA:BB|${SVC}|${CHR}`] && nat.listeners[`notification|AA:BB|${SVC}|${CHR}`]({ value: '16 50 00 04' }), 1000);
+      },
+      disconnect: async () => {},
+    };
+    const ForegroundService = {
+      checkPermissions: async () => ({ display: 'granted' }),
+      requestPermissions: async () => ({ display: 'granted' }),
+      startForegroundService: async (o) => ((nat.fg = o), nat.calls.push(['fg-start'])),
+      stopForegroundService: async () => nat.calls.push(['fg-stop']),
+    };
+    Object.defineProperty(navigator, 'bluetooth', { configurable: true, value: undefined });
+    window.Capacitor = { isNativePlatform: () => true, Plugins: { BluetoothLe, ForegroundService } };
+  });
+  const np = await nctx.newPage();
+  watch(np);
+  await np.clock.install({ time: new Date(T0 + 30 * 60000) });
+  await np.goto(BASE);
+  await np.waitForSelector('#strapChip');
+  check('app: no "no Web Bluetooth" warning', (await np.locator('.banner.warn').count()) === 0);
+  await np.click('#strapChip');
+  await np.click('[data-s="pick"]');
+  await np.clock.runFor(3000);
+  const nat = await np.evaluate(() => window.__nat);
+  check('app: native Bluetooth asks only for heart-rate devices', JSON.stringify(nat.calls.find((c) => c[0] === 'request')[1]) === JSON.stringify({ services: ['0000180d-0000-1000-8000-00805f9b34fb'] }));
+  check('app: strap connected, readings arrive natively (80 bpm)', (await np.locator('#strapChipText').innerText()) === '80 bpm');
+  await np.goto(BASE + '#/start/meeting');
+  await np.waitForSelector('#fGo');
+  await np.click('#fGo');
+  await np.waitForSelector('#liveBpm');
+  await np.clock.runFor(5000);
+  const fg = await np.evaluate(() => window.__nat.fg);
+  check('app: background recording service starts with the session (connected-device type)', fg && fg.serviceType === 16 && fg.smallIcon === 'ic_stat_pulse' && fg.title === 'Pulse is recording');
+  await np.click('#endBtn');
+  await np.click('#endBtn');
+  await np.waitForSelector('#eSave');
+  check('app: service stops when the session ends', (await np.evaluate(() => window.__nat.calls.filter((c) => c[0] === 'fg-stop').length)) >= 1);
+  await np.click('#eDiscard');
+  await np.click('#eDiscard');
+  await np.waitForFunction(() => location.hash === '#/' || location.hash === '');
+  await np.waitForTimeout(300);
+  await np.goto(BASE + '#/settings');
+  await np.waitForSelector('[data-set="icsUrl"]');
+  await np.waitForTimeout(300);
+  await np.screenshot({ path: 'tests/screens/20-settings-in-app.png' });
+  const appGroup = await np.evaluate(() => [...document.querySelectorAll('.set-group')].map((g) => g.innerText.slice(0, 80)).join(' | '));
+  check("app: settings know it's the Android app", appGroup.includes("You're using the Pulse app"));
+  check('no sideways scrolling in settings', await np.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+  await np.screenshot({ path: 'tests/screens/19-settings-app.png', fullPage: true });
 
   /* ---------- 5. Desktop widths ---------- */
   const dctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });

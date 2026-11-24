@@ -127,9 +127,10 @@ export const DEFAULT_SETTINGS = {
   delaySec: 60, // stream delay behind the live data feed (streams are usually 30–90 s behind)
   featBigChances: true,
   apiFootballKey: '', // optional free-tier key: backup source for live scores
-  reminderMin: 15,
   // Calendar & WHOOP
   gcalClientId: '',
+  icsUrl: '', // private iCal address (used in the Android app)
+  selfEmail: '', // your email, to leave you out of attendee lists
   calAutoRefresh: true,
   whoopRelay: '', // URL of your Cloudflare relay for WHOOP's official API
   whoopAutoRhr: true,
@@ -202,6 +203,7 @@ export const ICONS = {
   star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z" stroke-linejoin="round"/></svg>',
   tv: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/></svg>',
   cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 9.5h17M8 3v4M16 3v4" stroke-linecap="round"/></svg>',
+  phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M11 18.5h2" stroke-linecap="round"/></svg>',
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 018 0v3"/></svg>',
   spark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>',
   heart: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.5-4.6-9.5-9.4C1.2 8.2 3.4 4.5 7 4.5c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.6 0 5.8 3.7 4.5 7.1C19.5 16.4 12 21 12 21z"/></svg>',
@@ -219,7 +221,7 @@ export function typeOf(key) {
 
 /** AI models you can pick (prices per million tokens, Anthropic list prices). */
 export const AI_MODELS = [
-  { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5 · best captions · about 3–5¢ per analysis' },
-  { id: 'claude-haiku-5-5', label: 'Haiku 5.5 · cheapest · about 0.2¢ per analysis' },
-  { id: 'claude-opus-5-5', label: 'Opus 5.5 · most thorough · about 6–9¢ per analysis' },
+  { id: 'claude-haiku-5-5', name: 'Haiku 5.5', note: 'Cheapest, good captions', cost: '≈0.2¢' },
+  { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', note: 'Best captions (recommended)', cost: '≈3–5¢' },
+  { id: 'claude-opus-5-5', name: 'Opus 5.5', note: 'Most thorough', cost: '≈6–9¢' },
 ];

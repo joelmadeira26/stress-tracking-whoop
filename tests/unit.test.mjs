@@ -584,3 +584,37 @@ test('API-Football backup: one shared call per minute, never above the daily cap
   configureFeeds({ apiFootballKey: '' });
   delete globalThis.localStorage;
 });
+
+/* ---------- Private iCal address (Android app calendar) ---------- */
+import { expandIcs } from '../js/icalfeed.js';
+import { hexToDataView } from '../js/native.js';
+
+test('iCal: weekly recurrence in a time zone, EXDATE, moved instance, declined, all-day, rooms', () => {
+  const ics = [
+    'BEGIN:VCALENDAR',
+    'BEGIN:VEVENT', 'UID:a1', 'DTSTART;TZID=Europe/Lisbon:20261102T100000', 'DTEND;TZID=Europe/Lisbon:20261102T103000', 'RRULE:FREQ=WEEKLY;BYDAY=MO,WE',
+    'EXDATE;TZID=Europe/Lisbon:20261125T100000', 'SUMMARY:Weekly sync', 'ATTENDEE;CN=Me;PARTSTAT=ACCEPTED:mailto:me@x.com',
+    'ATTENDEE;CN=Marco Rossi:mailto:marco@x.com', 'ATTENDEE;CUTYPE=ROOM;CN=Room 1:mailto:room@x.com', 'END:VEVENT',
+    'BEGIN:VEVENT', 'UID:a1', 'RECURRENCE-ID;TZID=Europe/Lisbon:20261130T100000', 'DTSTART;TZID=Europe/Lisbon:20261130T150000', 'DTEND;TZID=Europe/Lisbon:20261130T153000', 'SUMMARY:Weekly sync (moved)', 'END:VEVENT',
+    'BEGIN:VEVENT', 'UID:b2', 'DTSTART:20261124T140000Z', 'DTEND:20261124T150000Z', 'SUMMARY:Declined one', 'ATTENDEE;PARTSTAT=DECLINED:mailto:me@x.com', 'END:VEVENT',
+    'BEGIN:VEVENT', 'UID:c3', 'DTSTART;VALUE=DATE:20261124', 'SUMMARY:Holiday', 'END:VEVENT',
+    'BEGIN:VEVENT', 'UID:d4', 'DTSTART;TZID=America/New_York:20260701T090000', 'DTEND;TZID=America/New_York:20260701T093000', 'RRULE:FREQ=DAILY;COUNT=3', 'SUMMARY:Summer standup', 'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+  const ev = expandIcs(ics, Date.parse('2026-11-20'), Date.parse('2026-12-03'), { selfEmail: 'me@x.com' });
+  assert.deepEqual(ev.map((e) => [new Date(e.start).toISOString(), e.title]), [
+    ['2026-11-23T10:00:00.000Z', 'Weekly sync'],
+    ['2026-11-30T15:00:00.000Z', 'Weekly sync (moved)'],
+    ['2026-12-02T10:00:00.000Z', 'Weekly sync'],
+  ]);
+  assert.deepEqual(ev[0].attendees, ['Marco Rossi']);
+  assert.deepEqual(ev[1].attendees, ['Marco Rossi'], 'moved instance keeps the series attendees');
+  const summer = expandIcs(ics, Date.parse('2026-06-30'), Date.parse('2026-07-10'));
+  assert.deepEqual(summer.map((e) => new Date(e.start).toISOString()), ['2026-07-01T13:00:00.000Z', '2026-07-02T13:00:00.000Z', '2026-07-03T13:00:00.000Z'], 'EDT offset + COUNT');
+});
+
+test('native Bluetooth hex payload → DataView parsed as heart rate', () => {
+  const r = parseHeartRate(hexToDataView('16 4b 00 04'));
+  assert.equal(r.hr, 75);
+  assert.deepEqual(r.rr, [1000]);
+});

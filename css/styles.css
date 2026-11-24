@@ -464,7 +464,11 @@ html.large { zoom: 1.1; }
 .set-row select { width: auto; min-height: 44px; }
 .set-row.stack { flex-direction: column; align-items: stretch; }
 .set-row.stack .row2 { margin-top: 6px; }
-.set-row .toggle { min-height: 0; border: 0; }
+.set-row .toggle { min-height: 0; border: 0; flex: none; }
+.set-row .numctl { display: inline-flex; align-items: center; gap: 6px; flex: none; white-space: nowrap; }
+.set-row .numctl input[type='number'] { width: 76px; }
+.set-row .numctl .unit { font-size: 12.5px; color: var(--muted); min-width: 22px; }
+.set-row > .lbl { flex: 1 1 auto; }
 .pill-status { font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: var(--panel2); color: var(--muted); white-space: nowrap; }
 .pill-status.on { color: #fff; background: #2f9e57; }
 .saved-note { position: sticky; top: 0; z-index: 3; text-align: center; font-size: 12px; color: var(--muted); padding: 4px; }
@@ -501,3 +505,24 @@ html.large { zoom: 1.1; }
 .lockscreen { text-align: center; padding: 40px 10px; display: grid; gap: 14px; justify-items: center; }
 .lockscreen svg { width: 44px; height: 44px; color: var(--muted); }
 .lockscreen input { max-width: 220px; text-align: center; font-family: var(--num); font-size: 28px; letter-spacing: 0.3em; }
+
+/* v9: no sideways scrolling or page zoom; tidy settings */
+html, body { max-width: 100%; overflow-x: hidden; }
+body { touch-action: pan-y; }
+#view, .card, .set-card, .set-row, .set-row .lbl, .fx, .scoreboard { min-width: 0; }
+.set-row > * { min-width: 0; }
+.set-row select, .set-row input[type='text'], .set-row input[type='password'] { max-width: 100%; }
+.set-row:not(.stack) select { max-width: 55%; }
+.set-row.stack .row2 { grid-template-columns: 1fr 1fr; }
+.set-row .lbl span { overflow-wrap: anywhere; }
+.modelpick { display: grid; gap: 6px; margin-top: 8px; }
+.mopt { display: grid; grid-template-columns: 1fr auto; grid-template-areas: 'name cost' 'note cost'; align-items: center; gap: 0 10px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg2); cursor: pointer; }
+.mopt input { position: absolute; opacity: 0; pointer-events: none; }
+.mopt .mname { grid-area: name; font-weight: 600; }
+.mopt .mnote { grid-area: note; font-size: 12.5px; color: var(--muted); }
+.mopt .mcost { grid-area: cost; font-family: var(--num); font-size: 18px; font-weight: 700; }
+.mopt.on { border-color: var(--text); box-shadow: 0 0 0 1px var(--text) inset; }
+.mopt:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+#effortSeg { margin-top: 8px; }
+.explore-scroll { touch-action: pan-x pan-y; overscroll-behavior: contain; }
+.explore-scroll.pinching { touch-action: none; }

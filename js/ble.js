@@ -1,9 +1,11 @@
 // Web Bluetooth connection to a standard BLE heart-rate broadcaster (WHOOP "Heart Rate Broadcast").
 import { parseHeartRate } from './hr.js';
+import { isNativeApp, plugin, hexToDataView, HR_SERVICE, HR_MEASUREMENT } from './native.js';
 
 export function bluetoothSupport() {
   const ua = navigator.userAgent || '';
   const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (isNativeApp() && plugin('BluetoothLe')) return { ok: true, isIOS: false, native: true };
   if (navigator.bluetooth && typeof navigator.bluetooth.requestDevice === 'function') {
     return { ok: true, isIOS };
   }
@@ -115,4 +117,101 @@ export class Strap {
     if (this.device && this.device.gatt.connected) this.device.gatt.disconnect();
     this.setStatus('disconnected');
   }
+}
+
+/**
+ * Same interface as Strap, using the Android app's native Bluetooth (works with the screen off).
+ */
+export class NativeStrap extends Strap {
+  constructor(cb) {
+    super(cb);
+    this.ble = plugin('BluetoothLe');
+    this.deviceId = null;
+    this.deviceLabel = null;
+    this.listeners = [];
+    this.ready = false;
+  }
+
+  get deviceName() {
+    return this.deviceId ? this.deviceLabel || 'Heart-rate strap' : null;
+  }
+
+  async pick({ showAll = false } = {}) {
+    if (!this.ready) {
+      await this.ble.initialize({ androidNeverForLocation: true });
+      this.ready = true;
+    }
+    try {
+      const on = await this.ble.isEnabled();
+      if (on && on.value === false) await this.ble.requestEnable();
+    } catch {
+      /* not supported on every phone */
+    }
+    const dev = await this.ble.requestDevice(showAll ? { optionalServices: [HR_SERVICE] } : { services: [HR_SERVICE] });
+    if (this.deviceId && this.deviceId !== dev.deviceId) await this._cleanup(true);
+    this.deviceId = dev.deviceId;
+    this.deviceLabel = dev.name;
+    this.wanted = true;
+    this.attempt = 0;
+    await this._connect();
+  }
+
+  async _cleanup(disconnect) {
+    for (const l of this.listeners) {
+      try {
+        await l.remove();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.listeners = [];
+    if (disconnect && this.deviceId) {
+      try {
+        await this.ble.disconnect({ deviceId: this.deviceId });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  async _connect() {
+    clearTimeout(this.retryTimer);
+    this.setStatus(this.attempt ? 'reconnecting' : 'connecting', { attempt: this.attempt });
+    try {
+      await this._cleanup(false);
+      const id = this.deviceId;
+      this.listeners.push(await this.ble.addListener(`disconnected|${id}`, () => this._onDisconnect()));
+      await this.ble.connect({ deviceId: id, timeout: 15000 });
+      this.listeners.push(
+        await this.ble.addListener(`notification|${id}|${HR_SERVICE}|${HR_MEASUREMENT}`, (ev) =>
+          this._onNotify({ target: { value: typeof (ev && ev.value) === 'string' ? hexToDataView(ev.value) : ev && ev.value } }),
+        ),
+      );
+      await this.ble.startNotifications({ deviceId: id, service: HR_SERVICE, characteristic: HR_MEASUREMENT });
+      this.attempt = 0;
+      this.setStatus('connected', { name: this.deviceName });
+    } catch (err) {
+      if (!this.wanted) return;
+      this._scheduleRetry(err);
+    }
+  }
+
+  retryNow() {
+    if (this.wanted && this.deviceId && this.status !== 'connected') {
+      this.attempt = Math.max(1, this.attempt);
+      this._connect();
+    }
+  }
+
+  disconnect() {
+    this.wanted = false;
+    clearTimeout(this.retryTimer);
+    this._cleanup(true);
+    this.setStatus('disconnected');
+  }
+}
+
+/** The right strap implementation for where Pulse is running. */
+export function createStrap(cb) {
+  return isNativeApp() && plugin('BluetoothLe') ? new NativeStrap(cb) : new Strap(cb);
 }

@@ -1,6 +1,8 @@
 // Pulse — UI, routing and live-session logic.
 import { AI_MODELS, SESSION_TYPES, typeOf, FREE_TAG, ICONS, COLORS, CATEGORIES, REACTIONS, COMPETITIONS, DEFAULT_FOLLOW, TEAM_SEARCH_LEAGUES } from './config.js';
-import { Strap, bluetoothSupport } from './ble.js';
+import { createStrap, bluetoothSupport } from './ble.js';
+import { isNativeApp, startRecordingService, stopRecordingService } from './native.js';
+import { fetchIcsEvents } from './icalfeed.js';
 import { SampleAggregator } from './hr.js';
 import { db, loadSettings, saveSettings, loadFollow, saveFollow, uid } from './db.js';
 import {
@@ -37,7 +39,6 @@ import { DEMOS, demoMeetingWeek } from './demo.js';
 import { loadFixtures, syncEvent, searchableTeams, currentDrivers, configureFeeds, backupLiveScore, apiFootballUsage, AF_DAILY_CAP } from './feeds.js';
 import * as whoop from './whoop.js';
 import { hashPin, checkPin, isUnlocked, markUnlocked, biometricAvailable, registerBiometric, verifyBiometric } from './lock.js';
-import { buildIcs, fixtureToEvent } from './ics.js';
 import { calendarEvents, isConnected as gcalConnected, disconnect as gcalDisconnect } from './gcal.js';
 
 /* ---------------- Helpers ---------------- */
@@ -142,7 +143,7 @@ const aggregator = new SampleAggregator((sample, isNew) => {
   renderStrapBits();
 });
 
-const strap = new Strap({
+const strap = createStrap({
   onStatus: (status, info) => {
     state.strapStatus = status;
     state.strapInfo = info;
@@ -412,7 +413,7 @@ async function renderHome() {
     </div>
     <a class="meetcard" href="#/meetings" id="meetCard">${icon('chat')}<div class="grow"><b>Meeting stress</b><span class="small muted" id="meetSummary">See which meetings raise your heart rate</span></div><span class="chev">›</span></a>
     ${weeklyHtml(sessions)}
-    <div class="section-title"><h3>Sports</h3><span><button class="linkbtn small" id="remindAll">${icon('cal')} Add to calendar</button> <a href="#/following" class="small">Edit</a></span></div>
+    <div class="section-title"><h3>Sports</h3><a href="#/following" class="small">Edit</a></div>
     <div id="fixtures">${fixturesHtml(state.fixtures)}</div>
     <div class="section-title"><h3>Recent sessions</h3>${sessions.length > 4 ? '<a href="#/history" class="small">See all</a>' : ''}</div>
     ${sessionListHtml(sessions.slice(0, 4))}
@@ -420,12 +421,6 @@ async function renderHome() {
   bindStrapChip();
   renderStrapBits();
   $$('[data-start]').forEach((b) => b.addEventListener('click', () => go(`#/start/${b.dataset.start}`)));
-  $('#remindAll').addEventListener('click', () => {
-    const evs = ((state.fixtures && state.fixtures.events) || []).filter((e) => e.state === 'pre' && (e.source === 'openf1' || e.mine));
-    if (!evs.length) return toast('No upcoming games for your teams or drivers yet');
-    downloadIcs(evs, 'pulse-my-games.ics');
-    toast(`${evs.length} game${evs.length > 1 ? 's' : ''} ready to add to your calendar`);
-  });
   {
     const ms = sessions.filter((x) => x.type === 'meeting');
     if (ms.length && state.settings.lockOn && !isUnlocked()) $('#meetSummary').textContent = `${ms.length} meetings · locked`;
@@ -499,7 +494,6 @@ function watchSheet(ev) {
     ${state.strapStatus !== 'connected' && support.ok ? '<p class="small" style="color:#fbd38d">Strap not connected yet. You can connect it on the next screen.</p>' : ''}
     <div class="actions">
       <button class="btn primary" id="wGo" style="min-height:58px;font-size:17px">${icon('tv')} I'm watching, start</button>
-      ${ev.state === 'pre' ? `<button class="btn" id="wRemind">${icon('cal')} Remind me ${state.settings.reminderMin} min before</button>` : ''}
       <button class="btn ghost" id="wCancel">Cancel</button>
     </div>`);
   const seg = $('#wMine', m);
@@ -513,12 +507,6 @@ function watchSheet(ev) {
       }
     });
   $('#wCancel', m).addEventListener('click', hideModal);
-  const rem = $('#wRemind', m);
-  if (rem)
-    rem.addEventListener('click', () => {
-      downloadIcs([ev], `pulse-${ev.key.replace(/[^a-z0-9]/gi, '-')}.ics`);
-      toast('Open the file to add the reminder to your calendar');
-    });
   $('#wGo', m).addEventListener('click', async () => {
     hideModal();
     await startLinkedSession(ev, mine);
@@ -619,9 +607,9 @@ function renderStart(typeKey) {
   let people = null;
   if (type.attendees) {
     knownPeople().then((known) => (people = peopleInput($('#fPeople'), [], known)));
-    if (state.settings.gcalClientId && gcalConnected()) {
+    if (calendarReady()) {
       const now = Date.now();
-      calendarEvents(state.settings.gcalClientId, now - 60 * 60000, now + 2 * 3600e3)
+      getCalendar(now - 60 * 60000, now + 2 * 3600e3)
         .then((evs) => {
           const near = evs.filter((e) => e.end > now - 10 * 60000).slice(0, 3);
           if (!near.length) return;
@@ -884,6 +872,7 @@ function renderLive() {
   const s = state.live;
   if (!s) return go('#/');
   if (s.ended) return go('#/end');
+  startRecordingService(displayTitle(s));
   const type = typeOf(s.type);
   const linked = !!s.event;
   requestWakeLock();
@@ -1043,6 +1032,7 @@ function renderLive() {
     const ob = openBand(s);
     if (ob) ob.end = now;
     s.ended = true;
+    stopRecordingService();
     if (s.feed) applyFeed(s);
     db.saveLive(s).catch(() => {});
     releaseWakeLock();
@@ -1272,6 +1262,7 @@ function renderEnd() {
     go('#/live');
   });
   armButton($('#eDiscard'), 'Tap again to discard', async () => {
+    stopRecordingService();
     state.live = null;
     await db.clearLive();
     go('#/');
@@ -1288,6 +1279,7 @@ function renderEnd() {
         /* keep what we have; detail page can update later */
       }
     }
+    stopRecordingService();
     const saved = finalize(s);
     await db.saveSession(saved);
     await db.clearLive();
@@ -1361,7 +1353,7 @@ async function renderSession(id) {
       <button class="btn" id="wRegen">${icon('spark')} ${hasAi ? 'Re-analyse' : 'Analyse with AI'}</button>
     </div>
     <div class="explore" id="dExplore" ${s.samples && s.samples.length ? '' : 'hidden'}>
-      <div class="explore-bar"><span class="grow">Tap a numbered marker to read it. Zoom to look closer.</span>
+      <div class="explore-bar"><span class="grow">Pinch or use the buttons to zoom. Tap a numbered marker to read it.</span>
         <button class="btn small" data-zoom="1">1×</button><button class="btn small" data-zoom="2">2×</button><button class="btn small" data-zoom="4">4×</button></div>
       <div class="explore-scroll" id="dExploreSvg"></div>
       <div class="explore-cap" id="dExploreCap">Tap a marker on the chart.</div>
@@ -1420,6 +1412,47 @@ async function renderSession(id) {
     const w = Math.max(320, Math.floor(box.clientWidth || 340));
     box.innerHTML = chartSvg(s, w * zoom, w < 500 ? 300 : 380, { restingHr: rest });
     $$('[data-zoom]').forEach((b) => b.classList.toggle('primary', Number(b.dataset.zoom) === zoom));
+    bindPinch(box);
+  };
+  // Two-finger pinch zooms the chart only (the page itself never zooms).
+  const bindPinch = (box) => {
+    if (box.dataset.pinch) return;
+    box.dataset.pinch = '1';
+    const pts = new Map();
+    let start = null;
+    const dist = () => {
+      const [a, b] = [...pts.values()];
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    };
+    box.addEventListener('pointerdown', (e) => {
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pts.size === 2) {
+        box.classList.add('pinching');
+        const mid = ([...pts.values()][0].x + [...pts.values()][1].x) / 2 - box.getBoundingClientRect().left;
+        start = { d: dist(), z: zoom, frac: (box.scrollLeft + mid) / Math.max(1, box.scrollWidth), mid };
+      }
+    });
+    box.addEventListener('pointermove', (e) => {
+      if (!pts.has(e.pointerId)) return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pts.size === 2 && start) {
+        e.preventDefault();
+        const z = Math.max(1, Math.min(6, Math.round(start.z * (dist() / start.d) * 4) / 4));
+        if (z !== zoom) {
+          drawExplore(z);
+          box.scrollLeft = start.frac * box.scrollWidth - start.mid;
+        }
+      }
+    });
+    const end = (e) => {
+      pts.delete(e.pointerId);
+      if (pts.size < 2) {
+        start = null;
+        box.classList.remove('pinching');
+      }
+    };
+    box.addEventListener('pointerup', end);
+    box.addEventListener('pointercancel', end);
   };
   view.addEventListener('click', (e) => {
     const z = e.target.closest('[data-zoom]');
@@ -1490,8 +1523,8 @@ async function renderSession(id) {
       wds.addEventListener('click', async () => {
         wds.disabled = true;
         try {
-          if (state.settings.gcalClientId) {
-            s.calEvents = await calendarEvents(state.settings.gcalClientId, ...dayRange(s.startTs), { interactive: true });
+          if (calendarConfigured()) {
+            s.calEvents = await getCalendar(...dayRange(s.startTs), true);
             applyCalendarBands(s);
             await db.saveSession(s);
           }
@@ -1752,14 +1785,14 @@ function dayRange(t) {
 }
 
 async function refreshWorkdayCalendar(s, interactive = false) {
-  if (!state.settings.gcalClientId) {
+  if (!calendarConfigured()) {
     const el = $('#wdCal');
     if (el) el.innerHTML = '<p class="small muted">Connect Google Calendar in Settings and your meetings appear here and get scored automatically. You can still add meetings manually afterwards.</p>';
     return;
   }
   try {
     const [a, b] = dayRange(s.startTs);
-    s.calEvents = await calendarEvents(state.settings.gcalClientId, a, b, { interactive });
+    s.calEvents = await getCalendar(a, b, interactive);
     applyCalendarBands(s);
     db.saveLive(s).catch(() => {});
     refreshLive(true);
@@ -2080,14 +2113,23 @@ async function renderManualMeeting(s) {
   });
 }
 
-/* ---------------- Helpers: reminders, weekly, info chips, lock ---------------- */
+/* ---------------- Calendar source: Google sign-in (browser) or private iCal address (app) ---------------- */
+
+function calendarConfigured() {
+  return !!(state.settings.icsUrl || state.settings.gcalClientId);
+}
+function calendarReady() {
+  return !!state.settings.icsUrl || (!!state.settings.gcalClientId && gcalConnected());
+}
+async function getCalendar(from, to, interactive = false) {
+  if (state.settings.icsUrl) return fetchIcsEvents(state.settings.icsUrl, from, to, { selfEmail: state.settings.selfEmail || '' });
+  return calendarEvents(state.settings.gcalClientId, from, to, { interactive });
+}
+
+/* ---------------- Helpers: weekly, info chips, lock ---------------- */
 
 const APP_URL = () => location.origin + location.pathname;
 
-function downloadIcs(evs, name) {
-  const ics = buildIcs(evs.map((e) => fixtureToEvent(e, APP_URL())), { alarmMin: Number(state.settings.reminderMin) || 15 });
-  downloadBlob(new Blob([ics], { type: 'text/calendar' }), name);
-}
 
 function detailInfoHtml(s) {
   const q = dataQuality(s);
@@ -2483,9 +2525,9 @@ function renderSettings() {
   const tog = (key, title, sub = '') =>
     `<div class="set-row"><div class="lbl"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div><label class="toggle"><input type="checkbox" data-set="${key}" ${st[key] ? 'checked' : ''} aria-label="${esc(title)}"/><i></i></label></div>`;
   const num = (key, title, sub, min, max, unit = '') =>
-    `<div class="set-row"><div class="lbl"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div><span><input type="number" data-set="${key}" data-num="1" min="${min}" max="${max}" inputmode="numeric" value="${esc(st[key])}" aria-label="${esc(title)}"/>${unit ? ` <span class="small muted">${unit}</span>` : ''}</span></div>`;
-  const sel = (key, title, opts, sub = '') =>
-    `<div class="set-row"><div class="lbl"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div><select data-set="${key}" aria-label="${esc(title)}">${opts
+    `<div class="set-row"><div class="lbl"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div><span class="numctl"><input type="number" data-set="${key}" data-num="1" min="${min}" max="${max}" inputmode="numeric" value="${esc(st[key])}" aria-label="${esc(title)}"/>${unit ? `<span class="unit">${unit}</span>` : ''}</span></div>`;
+  const sel = (key, title, opts, sub = '', stack = false) =>
+    `<div class="set-row${stack ? ' stack' : ''}"><div class="lbl"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div><select data-set="${key}" aria-label="${esc(title)}">${opts
       .map(([v, l]) => `<option value="${v}" ${String(st[key]) === v ? 'selected' : ''}>${l}</option>`)
       .join('')}</select></div>`;
   const txt = (key, title, sub, ph = '', secret = false) =>
@@ -2511,21 +2553,29 @@ function renderSettings() {
     ${group('ball', 'Live sport data', [
       num('delaySec', 'Stream delay', 'Set automatically when you use Sync stream', 0, 600, 's'),
       tog('featBigChances', 'Big chances', 'Add close-range shots and woodwork as moments'),
-      num('reminderMin', 'Reminder', 'How long before kick-off calendar reminders alert you', 0, 180, 'min'),
       `<div class="set-row"><div class="lbl"><b>Teams, competitions, drivers</b><span>${esc(state.follow.teams.length + ' teams · ' + state.follow.competitions.length + ' competitions · ' + state.follow.drivers.length + ' drivers')}</span></div><a class="btn small" href="#/following">Edit</a></div>`,
       txt('apiFootballKey', 'Backup live scores (API-Football, free tier)', `Optional, free. Used only when ESPN is unavailable, at most once a minute and ${AF_DAILY_CAP} times a day so it never passes the free 100/day. Used today: ${apiFootballUsage()}. Free key at dashboard.api-football.com.`, 'Paste key', true),
       `<div class="set-row"><div class="lbl"><b>F1 data</b><span>OpenF1 free data: moments fill in right after the race (live timing is a paid OpenF1 feature, not used).</span></div><span class="pill-status on">Free</span></div>`,
     ])}
-    ${group('cal', 'Google Calendar', [
-      txt('gcalClientId', 'Google OAuth client ID', 'Read-only, straight from Google to this phone.', '1234-abc.apps.googleusercontent.com'),
-      `<div class="set-row"><div class="lbl"><b>Connection</b><span id="sGcalStatus">${gcalConnected() ? 'Connected' : 'Not connected'} · <a href="https://github.com/joelmadeira26/stress-tracking-whoop#google-calendar-setup" target="_blank" rel="noopener">setup guide</a></span></div>
-        <span><button class="btn small" id="sGcalGo" type="button">${gcalConnected() ? 'Reconnect' : 'Connect'}</button> <button class="btn small ghost" id="sGcalOff" type="button" ${gcalConnected() ? '' : 'disabled'}>Disconnect</button></span></div>`,
+    ${group('phone', 'Android app', [
+      isNativeApp()
+        ? `<div class="set-row"><div class="lbl"><b>You're using the Pulse app</b><span>Recording continues with the screen off; a “Pulse is recording” notification shows while it runs.</span></div><span class="pill-status on">On</span></div>`
+        : `<div class="set-row stack"><div class="lbl"><b>Get the Pulse app for Android</b><span>Keeps recording with the screen off and connects to your strap natively. Free; installs from this site.</span></div>
+          <a class="btn primary" href="download/pulse.apk" download>${icon('share')} Download Pulse for Android</a>
+          <span class="small muted" style="margin-top:6px">After downloading, open the file and allow “Install unknown apps” for Chrome when asked. Then move your sessions with Export / Restore below.</span></div>`,
+    ])}
+    ${group('cal', 'Calendar', [
+      txt('icsUrl', 'Private iCal address', isNativeApp() ? 'Best for the app (Google sign-in doesn’t work inside apps). Google Calendar → Settings → your calendar → “Secret address in iCal format”.' : 'Works in the Android app. In Chrome use Google sign-in below.', 'https://calendar.google.com/calendar/ical/…/basic.ics', true),
+      txt('selfEmail', 'Your email', 'Leaves you out of attendee lists and skips meetings you declined.', 'you@company.com'),
+      txt('gcalClientId', 'Google OAuth client ID (Chrome)', 'Read-only, straight from Google to this phone.', '1234-abc.apps.googleusercontent.com'),
+      `<div class="set-row stack"><div class="lbl"><b>Connection</b><span id="sGcalStatus">${gcalConnected() ? 'Connected' : 'Not connected'} · <a href="https://github.com/joelmadeira26/stress-tracking-whoop#google-calendar-setup" target="_blank" rel="noopener">setup guide</a></span></div>
+        <div class="row2"><button class="btn small" id="sGcalGo" type="button">${gcalConnected() ? 'Reconnect' : 'Connect'}</button><button class="btn small ghost" id="sGcalOff" type="button" ${gcalConnected() ? '' : 'disabled'}>Disconnect</button></div></div>`,
       tog('calAutoRefresh', 'Keep calendar in sync', 'Refresh meetings every 15 minutes during a work day'),
     ])}
     ${group('heart', 'WHOOP account (official API)', [
       txt('whoopRelay', 'Relay URL', 'Your Cloudflare relay that talks to WHOOP. See the setup guide.', 'https://pulse-whoop.yourname.workers.dev'),
-      `<div class="set-row"><div class="lbl"><b>Connection</b><span>${wConn ? `Connected${wLast ? ` · last sync ${new Date(wLast).toLocaleString()}` : ''}` : 'Not connected'} · <a href="https://github.com/joelmadeira26/stress-tracking-whoop/tree/main/relay#readme" target="_blank" rel="noopener">setup guide</a></span></div>
-        <span>${wConn ? '<button class="btn small" id="sWhoopSync" type="button">Sync now</button> <button class="btn small ghost" id="sWhoopOff" type="button">Disconnect</button>' : '<button class="btn small" id="sWhoopGo" type="button">Connect</button>'}</span></div>`,
+      `<div class="set-row stack"><div class="lbl"><b>Connection</b><span>${wConn ? `Connected${wLast ? ` · last sync ${new Date(wLast).toLocaleString()}` : ''}` : 'Not connected'} · <a href="https://github.com/joelmadeira26/stress-tracking-whoop/tree/main/relay#readme" target="_blank" rel="noopener">setup guide</a></span></div>
+        <div class="row2">${wConn ? '<button class="btn small" id="sWhoopSync" type="button">Sync now</button><button class="btn small ghost" id="sWhoopOff" type="button">Disconnect</button>' : '<button class="btn small" id="sWhoopGo" type="button">Connect</button>'}</div></div>`,
       tog('whoopAutoRhr', 'Update resting heart rate from WHOOP', 'Daily, from your latest recovery'),
     ])}
     ${group('chat', 'Meetings', [
@@ -2537,9 +2587,12 @@ function renderSettings() {
       `<div class="set-row"><div class="lbl"><b>Fingerprint / face unlock</b><span>${st.lockBioId ? 'Registered on this phone' : 'Unlock meetings without typing the PIN'}</span></div><button class="btn small" id="sBio" type="button" ${st.lockOn ? '' : 'disabled'}>${st.lockBioId ? 'Re-register' : 'Set up'}</button></div>`,
     ])}
     ${group('spark', 'AI analysis', [
-      txt('apiKey', 'Anthropic API key', 'Stored only on this phone, sent only to api.anthropic.com. Each analysis costs about 3–5¢ with Sonnet or 0.2¢ with Haiku.', 'sk-ant-…', true),
-      sel('model', 'AI model', [...AI_MODELS.map((m) => [m.id, m.label]), ...(AI_MODELS.some((m) => m.id === st.model) ? [] : [[st.model, st.model]])], 'The only thing Pulse costs. Charged to your Anthropic account.'),
-      sel('aiEffort', 'Analysis depth', [['low', 'Quick (cheapest)'], ['medium', 'Thorough (costs a bit more)']]),
+      txt('apiKey', 'Anthropic API key', 'Stored only on this phone, sent only to api.anthropic.com. Pay per analysis; see the costs below.', 'sk-ant-…', true),
+      `<div class="set-row stack"><div class="lbl"><b>AI model</b><span>The only thing Pulse costs, charged to your Anthropic account.</span></div>
+        <div class="modelpick">${[...AI_MODELS, ...(AI_MODELS.some((m) => m.id === st.model) ? [] : [{ id: st.model, name: st.model, note: 'Custom model', cost: '' }])]
+          .map((m) => `<label class="mopt ${st.model === m.id ? 'on' : ''}"><input type="radio" name="aiModel" data-set="model" value="${esc(m.id)}" ${st.model === m.id ? 'checked' : ''}/><span class="mname">${esc(m.name)}</span><span class="mnote">${esc(m.note)}</span><span class="mcost">${esc(m.cost)}</span></label>`)
+          .join('')}</div></div>`,
+      `<div class="set-row stack"><div class="lbl"><b>Analysis depth</b></div><div class="seg" id="effortSeg"><button type="button" data-effort="low" class="${st.aiEffort !== 'medium' ? 'on' : ''}">Quick · cheapest</button><button type="button" data-effort="medium" class="${st.aiEffort === 'medium' ? 'on' : ''}">Thorough</button></div></div>`,
       tog('featAutoAnalyse', 'Analyse automatically', 'Run the AI analysis when you save a session'),
     ])}
     ${group('star', 'Features', [
@@ -2572,10 +2625,11 @@ function renderSettings() {
     clearTimeout(noteTimer);
     noteTimer = setTimeout(() => n && (n.textContent = 'Changes save automatically'), 1500);
   };
-  const LIMITS = { restingHr: [30, 120], delaySec: [0, 600], reminderMin: [0, 180], meetSkipMin: [0, 10], meetBaselineMin: [30, 180], meetMinCoverage: [20, 100] };
+  const LIMITS = { restingHr: [30, 120], delaySec: [0, 600], meetSkipMin: [0, 10], meetBaselineMin: [30, 180], meetMinCoverage: [20, 100] };
   $$('[data-set]').forEach((el) => {
     el.addEventListener('change', async () => {
       const key = el.dataset.set;
+      if (el.type === 'radio' && !el.checked) return;
       let v = el.type === 'checkbox' ? el.checked : el.value.trim();
       if (el.dataset.num) {
         v = parseInt(v, 10);
@@ -2597,17 +2651,24 @@ function renderSettings() {
       if (key === 'featPersonalScale' || key === 'restingHr') await updatePersonalScale();
       if (key === 'lockOn' && v) markUnlocked(15);
       saved();
-      if (['lockOn', 'featPersonalScale', 'whoopRelay'].includes(key)) renderSettings();
+      if (['lockOn', 'featPersonalScale', 'whoopRelay', 'model'].includes(key)) renderSettings();
     });
   });
 
   $('#sStrap').addEventListener('click', () => connectStrap(false));
+  $$('[data-effort]').forEach((b) =>
+    b.addEventListener('click', () => {
+      state.settings = { ...state.settings, aiEffort: b.dataset.effort };
+      saveSettings(state.settings);
+      $$('[data-effort]').forEach((x) => x.classList.toggle('on', x === b));
+      saved();
+    }),
+  );
   $('#sGcalGo').addEventListener('click', async () => {
-    const id = (state.settings.gcalClientId || '').trim();
-    if (!id) return toast('Paste your Google client ID first');
+    if (!calendarConfigured()) return toast('Add the iCal address or a Google client ID first');
     try {
       const now = Date.now();
-      const evs = await calendarEvents(id, now - 12 * 3600e3, now + 24 * 3600e3, { interactive: true });
+      const evs = await getCalendar(now - 12 * 3600e3, now + 24 * 3600e3, true);
       $('#sGcalStatus').textContent = `Connected. ${evs.length} meeting${evs.length === 1 ? '' : 's'} today and tomorrow.`;
       $('#sGcalOff').disabled = false;
       toast('Google Calendar connected');
@@ -2676,7 +2737,7 @@ function renderSettings() {
   });
   $('#sExport').addEventListener('click', async () => {
     const all = await db.allSessions();
-    const secret = ['apiKey', 'apiFootballKey', 'lockPinHash', 'lockBioId'];
+    const secret = ['apiKey', 'apiFootballKey', 'icsUrl', 'lockPinHash', 'lockBioId'];
     const settings = Object.fromEntries(Object.entries(state.settings).filter(([k]) => !secret.includes(k)));
     downloadBlob(new Blob([JSON.stringify({ app: 'Pulse', version: 2, exportedAt: new Date().toISOString(), settings, follow: state.follow, sessions: all })], { type: 'application/json' }), `pulse-export-${new Date().toISOString().slice(0, 10)}.json`);
   });
