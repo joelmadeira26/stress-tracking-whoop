@@ -1,0 +1,16 @@
+{
+  "name": "Pulse — heart-rate & tension journal",
+  "short_name": "Pulse",
+  "description": "Record live heart rate from your WHOOP strap, tag moments, and get a chart and AI write-up.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#070d1c",
+  "theme_color": "#070d1c",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

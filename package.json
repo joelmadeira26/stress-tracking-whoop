@@ -1,0 +1,12 @@
+{
+  "name": "pulse",
+  "private": true,
+  "type": "module",
+  "description": "Pulse: personal heart-rate & tension journal (static PWA, no build step). package.json exists only for running tests.",
+  "scripts": {
+    "test": "node --test tests/unit.test.mjs && node tests/e2e.mjs",
+    "test:unit": "node --test tests/unit.test.mjs",
+    "test:e2e": "node tests/e2e.mjs",
+    "serve": "python3 -m http.server 8080"
+  }
+}
