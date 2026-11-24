@@ -7,7 +7,7 @@ import {
 } from '../js/analysis.js';
 import { staggerMarkers, chartSvg, monotonePath } from '../js/chart.js';
 import { buildRequest, generateWriteup, cleanText, API_URL } from '../js/ai.js';
-import { demoSport, demoMeeting, demoWorkout, demoF1 } from '../js/demo.js';
+import { demoSport, demoMeeting, demoF1 } from '../js/demo.js';
 import { parseEspnSummary, parseOpenF1, normalizeEspnEvent } from '../js/feeds.js';
 import { applyFeed, categoryLabels, legendCategories } from '../js/analysis.js';
 import fs from 'node:fs';
@@ -152,7 +152,7 @@ test('10 s buckets and gaps', () => {
   assert.equal(gaps[0].end, 120000);
 });
 test('demo sessions produce sensible stats', () => {
-  for (const d of [demoSport(60), demoMeeting(60), demoWorkout(60)]) {
+  for (const d of [demoSport(60), demoMeeting(60), demoF1(60)]) {
     const st = sessionStats(d, 60);
     assert.ok(st.avgHr > 60 && st.avgHr < 140, `${d.type} avg ${st.avgHr}`);
     assert.ok(st.peakHr > st.avgHr);
@@ -225,7 +225,7 @@ test('generateWriteup parses a mocked response and strips markdown', async () =>
   assert.equal(w.text, 'Nerves of steel at the death\n\nYour HR peaked at 128.');
 });
 test('generateWriteup error handling', async () => {
-  const s = demoWorkout(60);
+  const s = demoMeeting(60);
   const st = { apiKey: 'sk-ant-bad', model: 'claude-sonnet-5-5', restingHr: 60 };
   await assert.rejects(generateWriteup(s, { ...st, apiKey: '' }), (e) => e.kind === 'nokey');
   await assert.rejects(generateWriteup(s, st, async () => new Response(JSON.stringify({ error: { message: 'invalid x-api-key' } }), { status: 401 })), (e) => e.kind === 'auth');
@@ -280,7 +280,7 @@ test('ESPN goal side detection from running score (incl. own goals)', () => {
     commentary: [{ sequence: 9, time: { value: 2000, displayValue: "34'" }, text: 'VAR Decision: No Penalty Sporting CP.', play: { wallclock: '2026-11-25T20:34:00Z' } }],
   };
   const r = parseEspnSummary(d, { mine: 'home' });
-  const labels = r.moments.map((m) => `${m.cat}|${m.label}`);
+  const labels = r.moments.filter((m) => !['ko', 'ht', 'sh'].includes(m.fid)).map((m) => `${m.cat}|${m.label}`);
   assert.deepEqual(labels, [
     "goalMine|11' Goal Sporting CP (1–0): Luis Suárez",
     "goalTheirs|31' Goal Man United (1–1): Ousmane Diomande (own goal)",
@@ -318,15 +318,15 @@ test('applyFeed: TV delay shifts moments, hides future ones, clips to session', 
     ] } };
   applyFeed(s, t0 + 30 * 60000);
   const auto = s.tags.filter((g) => g.auto);
-  assert.deepEqual(auto.map((g) => g.label), ["11' Goal"]);
-  assert.equal(auto[0].t, t0 + 10 * 60000 + 40000);
-  assert.equal(auto[0].est, true, 'uncalibrated delay → "~"');
-  assert.equal(auto[0].catLabel, 'Goal Sporting CP');
+  assert.deepEqual(auto.map((g) => g.label), ['before you started', "11' Goal"], 'whole-match context, even before you joined');
+  assert.equal(auto[1].t, t0 + 10 * 60000 + 40000);
+  assert.equal(auto[1].est, true, 'uncalibrated delay → "~"');
+  assert.equal(auto[1].catLabel, 'Goal Sporting CP');
   assert.equal(s.phases.kickoff, t0 + 40000);
   assert.equal(s.tags.filter((g) => !g.auto).length, 1, 'manual reactions kept');
   assert.deepEqual(s.score, { home: 1, away: 0 });
   applyFeed(s, t0 + 31 * 60000);
-  assert.equal(s.tags.filter((g) => g.auto).length, 2, 'card appears once it would be on TV');
+  assert.equal(s.tags.filter((g) => g.auto).length, 3, 'card appears once it would be on your stream');
 });
 
 test('F1 demo legend categories match the reference', () => {
@@ -392,4 +392,96 @@ test('F1 stream sync by lap on real Las Vegas lap times, pending until data arri
   assert.equal(calibrationRealTime({ kind: 'lap', lap: 1 }, f), f.lightsOut);
   const lead = s.tags.find((g) => /^Lap 2:/.test(g.label));
   assert.ok(lead && lead.t === f.moments.find((m) => /^Lap 2:/.test(m.label)).ft + 48000);
+});
+
+/* ---------- v4: automatic match story, sync accuracy, AI analysis ---------- */
+import { pickNewer } from '../js/feeds.js';
+import { chartDomain, detectReactions } from '../js/analysis.js';
+import { parseAnalysis } from '../js/ai.js';
+
+test('Galatasaray 1–0 Aston Villa: phases, big chances, added time in the right half', () => {
+  const r = parseEspnSummary(fixture('espn-gal-avl.json'), { mine: 'home' });
+  const by = (re) => r.moments.find((m) => re.test(m.label));
+  assert.ok(by(/^Kick-off: Galatasaray v Aston Villa$/));
+  assert.ok(by(/^Half-time: Galatasaray 0–0 Aston Villa$/));
+  assert.ok(by(/^Second half under way$/));
+  const chance = by(/^27' Big chance: Taylor Harwood-Bellis \(Aston Villa\) header from close range missed$/);
+  assert.ok(chance && chance.cat === 'chance' && chance.detail.startsWith('Attempt missed'));
+  const goal = by(/^77' Goal Galatasaray \(1–0\): Deniz Gül$/);
+  assert.equal(goal.cat, 'goalMine');
+  const added = by(/\+5 min added time$/);
+  assert.ok(added.ft > goal.ft, 'added-time message without a period is placed in the second half');
+  assert.ok(r.context.length > 10 && r.context.some((c) => /Corner/.test(c)), 'raw lines kept for the AI');
+  const times = r.moments.map((m) => m.ft);
+  assert.deepEqual(times, [...times].sort((a, b) => a - b));
+});
+
+test('fixtures: a fresh "FT" beats a stale cached "LIVE 79\'" (Bodø/Glimt v LASK bug)', () => {
+  const now = Date.now();
+  const stale = { key: 'espn:1', state: 'in', detail: "79'", home: { score: '0' }, away: { score: '0' }, at: now - 20 * 60000 };
+  const fresh = { key: 'espn:1', state: 'post', detail: 'FT', home: { score: '1' }, away: { score: '0' }, at: now };
+  assert.equal(pickNewer(stale, fresh).detail, 'FT');
+  assert.equal(pickNewer(fresh, stale).detail, 'FT');
+  // same fetch moment: further along wins
+  assert.equal(pickNewer({ ...stale, at: now }, { ...fresh, at: now }).state, 'post');
+  // a fresh live score beats an older cached pre-match entry
+  assert.equal(pickNewer({ key: 'k', state: 'pre', at: now - 600000 }, { key: 'k', state: 'in', at: now }).state, 'in');
+});
+
+test('chart range covers the match even if you joined at 87\'', () => {
+  const t0 = Date.parse('2026-11-24T17:45:00Z');
+  const s = { type: 'sport', startTs: t0 + 100 * 60000, endTs: t0 + 101 * 60000, samples: [], tags: [{ t: t0, auto: true }, { t: t0 + 77 * 60000, auto: true }], bands: [] };
+  const d = chartDomain(s);
+  assert.ok(d.start <= t0 - 60000 && d.end >= s.endTs);
+  const far = { ...s, tags: [{ t: s.startTs - 5 * 3600 * 1000, auto: true }] };
+  assert.ok(chartDomain(far).start >= far.startTs - 3 * 3600 * 1000, 'capped at 3 h before you started');
+});
+
+test('heart-rate reactions: unexplained spikes become "Your reaction" moments', () => {
+  const t0 = Date.parse('2026-11-24T18:00:00Z');
+  const samples = [];
+  for (let i = 0; i < 40 * 60; i++) {
+    let hr = 72;
+    if (i >= 600 && i < 720) hr = 72 + Math.min(30, (i - 600) / 2); // spike at 10 min, no event
+    if (i >= 1800 && i < 1920) hr = 72 + Math.min(30, (i - 1800) / 2); // spike at 30 min, right after a goal
+    samples.push({ t: t0 + i * 1000, hr });
+  }
+  const s = { type: 'sport', startTs: t0, endTs: t0 + 40 * 60000, samples, tags: [{ t: t0 + 1795 * 1000, auto: true, cat: 'goalMine' }], bands: [] };
+  const r = detectReactions(s, 60);
+  assert.equal(r.length, 1, 'the spike explained by the goal is not repeated');
+  assert.ok(Math.abs(r[0].t - (t0 + 600 * 1000)) < 90 * 1000);
+  assert.match(r[0].label, /Your heart rate jumps to 10\d bpm/);
+});
+
+test('AI analysis JSON maps captions back to moments and reactions', () => {
+  const a = parseAnalysis(JSON.stringify({
+    headline: '**Pure nerves**', writeup: 'Para one.\n\nTakeaway: breathe.', caption: 'I tracked my heart rate… #WHOOP',
+    moments: [{ id: 'f:ko', text: "Kick-off. Your heart rate already 84" }, { id: 'r:p123', text: 'Corner to Villa. Heart rate jumps' }, { id: 'zzz', text: 'ignored' }],
+  }), 'claude-sonnet-5-5');
+  assert.equal(a.text, 'Pure nerves\n\nPara one.\n\nTakeaway: breathe.');
+  assert.deepEqual(a.ai.moments, { ko: 'Kick-off. Your heart rate already 84' });
+  assert.deepEqual(a.ai.reactions, { p123: 'Corner to Villa. Heart rate jumps' });
+  assert.equal(a.ai.caption, 'I tracked my heart rate… #WHOOP');
+  const plain = parseAnalysis('Just text', 'm');
+  assert.equal(plain.ai, null);
+  assert.equal(plain.text, 'Just text');
+});
+
+test('AI request asks for structured JSON with every moment id', () => {
+  const s = demoSport(60);
+  const req = buildRequest(s, { apiKey: 'sk-ant-x', model: 'claude-sonnet-5-5', restingHr: 60 });
+  assert.equal(req.body.output_config.format.type, 'json_schema');
+  const data = JSON.parse(req.body.messages[0].content.split('\n\n').slice(1).join('\n\n'));
+  const ids = data.moments.map((m) => m.id);
+  assert.ok(ids.every((id) => typeof id === 'string'));
+  assert.ok(data.moments.some((m) => m.source === 'live data') && data.moments.some((m) => m.source === 'you'));
+  assert.ok(data.moments.some((m) => m.maxHrNext2min > 0));
+});
+
+test('applyFeed uses AI captions when present', () => {
+  const s = demoF1(60);
+  const fid = s.feed.moments[1].fid;
+  s.ai = { moments: { [fid]: 'Lap 2: Russell passes Max; Max retakes it around the outside' }, reactions: {} };
+  applyFeed(s, Date.now());
+  assert.ok(s.tags.some((g) => g.label === 'Lap 2: Russell passes Max; Max retakes it around the outside' && g.baseLabel));
 });

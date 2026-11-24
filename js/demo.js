@@ -312,4 +312,4 @@ export function demoWorkout(rest = 60) {
   return session;
 }
 
-export const DEMOS = { sport: demoSport, f1: demoF1, meeting: demoMeeting, workout: demoWorkout };
+export const DEMOS = { sport: demoSport, f1: demoF1, meeting: demoMeeting };

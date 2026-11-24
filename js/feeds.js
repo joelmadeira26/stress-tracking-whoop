@@ -48,12 +48,26 @@ function cacheSet(key, data) {
   }
 }
 async function cached(key, maxAge, fn) {
-  const hit = cacheGet(key, maxAge);
-  if (hit) return hit;
+  return (await cachedAt(key, maxAge, fn)).data;
+}
+
+/** Like cached(), but also returns when the data was fetched ({ data, at }). */
+async function cachedAt(key, maxAge, fn) {
+  try {
+    const raw = localStorage.getItem('pulse.cache.' + key);
+    if (raw) {
+      const v = JSON.parse(raw);
+      if (Date.now() - v.t < maxAge) return { data: v.data, at: v.t };
+    }
+  } catch {
+    /* ignore */
+  }
   const data = await fn();
   cacheSet(key, data);
-  return data;
+  return { data, at: Date.now() };
 }
+
+const STATE_RANK = { pre: 0, in: 1, post: 2 };
 
 /* ---------------- Football fixtures ---------------- */
 
@@ -105,27 +119,41 @@ async function leagueFixtures(slug, now) {
   if (monthStr(later) !== months[0]) months.push(monthStr(later));
   const urls = [`${ESPN}/${slug}/scoreboard`, ...months.map((m) => `${ESPN}/${slug}/scoreboard?dates=${m}`)];
   const out = [];
-  const res = await Promise.allSettled(urls.map((u, i) => (i === 0 ? getJSON(u) : cached(`sb:${slug}:${months[i - 1]}`, 30 * MIN, () => getJSON(u)))));
+  const res = await Promise.allSettled(
+    urls.map((u, i) =>
+      i === 0 ? getJSON(u).then((data) => ({ data, at: Date.now() })) : cachedAt(`sb:${slug}:${months[i - 1]}`, 30 * MIN, () => getJSON(u)),
+    ),
+  );
   for (const r of res) {
     if (r.status !== 'fulfilled') continue;
-    const name = r.value.leagues && r.value.leagues[0] && r.value.leagues[0].name;
-    for (const e of r.value.events || []) {
+    const { data, at } = r.value;
+    const name = data.leagues && data.leagues[0] && data.leagues[0].name;
+    for (const e of data.events || []) {
       const n = normalizeEspnEvent(e, slug, name);
-      if (n) out.push(n);
+      if (n) out.push({ ...n, at });
     }
   }
   return out;
 }
 
+/** Today's scoreboard for one competition, always fresh (live scores and clocks). */
+async function liveScoreboard(slug) {
+  const data = await getJSON(`${ESPN}/${slug}/scoreboard`);
+  const at = Date.now();
+  const name = data.leagues && data.leagues[0] && data.leagues[0].name;
+  return (data.events || []).map((e) => normalizeEspnEvent(e, slug, name)).filter(Boolean).map((n) => ({ ...n, at }));
+}
+
 async function teamFixtures(team) {
   const urls = [`${ESPN}/all/teams/${team.id}/schedule?fixture=true`, `${ESPN}/all/teams/${team.id}/schedule`];
   const out = [];
-  const res = await Promise.allSettled(urls.map((u, i) => cached(`team:${team.id}:${i}`, 10 * MIN, () => getJSON(u))));
+  const res = await Promise.allSettled(urls.map((u, i) => cachedAt(`team:${team.id}:${i}`, 10 * MIN, () => getJSON(u))));
   for (const r of res) {
     if (r.status !== 'fulfilled') continue;
-    for (const e of r.value.events || []) {
+    const { data, at } = r.value;
+    for (const e of data.events || []) {
       const n = normalizeEspnEvent(e, e.league && e.league.slug);
-      if (n) out.push(n);
+      if (n) out.push({ ...n, at });
     }
   }
   return out;
@@ -149,6 +177,7 @@ async function f1Fixtures(now) {
       const state = now < start ? 'pre' : now <= end + 30 * MIN ? 'in' : 'post';
       return {
         key: `f1:${s.session_key}`,
+        at: now,
         source: 'openf1',
         id: String(s.session_key),
         sessionKey: s.session_key,
@@ -177,11 +206,19 @@ export async function loadFixtures(follow, now = Date.now()) {
   const res = await Promise.allSettled(jobs);
   const errors = res.filter((r) => r.status === 'rejected').length;
   const byKey = new Map();
-  for (const r of res) if (r.status === 'fulfilled') for (const ev of r.value) {
-    const prev = byKey.get(ev.key);
-    // prefer the freshest state (live scoreboard beats cached schedule)
-    if (!prev || (ev.state === 'in' && prev.state !== 'in') || (prev.state === 'pre' && ev.state === 'post')) byKey.set(ev.key, ev);
+  const add = (ev) => byKey.set(ev.key, pickNewer(byKey.get(ev.key), ev));
+  for (const r of res) if (r.status === 'fulfilled') for (const ev of r.value) add(ev);
+
+  // Anything live, or kicking off / finishing around now, is re-read from its competition's
+  // fresh scoreboard, so cached schedules can never show an old score or clock.
+  const freshLeagues = new Set(follow.competitions || []);
+  const needFresh = new Set();
+  for (const ev of byKey.values()) {
+    if (ev.source !== 'espn' || !ev.league || freshLeagues.has(ev.league)) continue;
+    if (ev.state === 'in' || Math.abs(ev.date - now) < 3 * 60 * MIN) needFresh.add(ev.league);
   }
+  const fresh = await Promise.allSettled([...needFresh].map(liveScoreboard));
+  for (const r of fresh) if (r.status === 'fulfilled') for (const ev of r.value) if (byKey.has(ev.key)) add(ev);
   const teamIds = new Set((follow.teams || []).map((t) => String(t.id)));
   const list = [...byKey.values()]
     .filter((e) => e.state === 'in' || (e.date > now - 4 * 60 * MIN && e.date < now + 9 * 24 * 60 * MIN))
@@ -193,6 +230,16 @@ export async function loadFixtures(follow, now = Date.now()) {
     })
     .sort((a, b) => (b.state === 'in') - (a.state === 'in') || a.date - b.date);
   return { events: list, errors, total: jobs.length };
+}
+
+/** Keep the most recently fetched copy of an event; for near-simultaneous copies, the one further along. */
+export function pickNewer(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const ta = a.at || 0;
+  const tb = b.at || 0;
+  if (Math.abs(ta - tb) > 60 * 1000) return tb > ta ? b : a;
+  return (STATE_RANK[b.state] ?? 0) > (STATE_RANK[a.state] ?? 0) ? b : (STATE_RANK[b.state] ?? 0) < (STATE_RANK[a.state] ?? 0) ? a : tb >= ta ? b : a;
 }
 
 /* ---------------- Team & driver search ---------------- */
@@ -270,8 +317,9 @@ export function parseEspnSummary(d, { mine = null } = {}) {
   const estimate = (period, clock) => {
     const v = clock && clock.value;
     if (v == null) return null;
-    if ((period || 1) <= 1 && phases.kickoff) return phases.kickoff + v * 1000;
-    if (period === 2 && phases.secondhalf) return phases.secondhalf + (v - 2700) * 1000;
+    const half = period || (v > 2700 ? 2 : 1);
+    if (half <= 1 && phases.kickoff) return phases.kickoff + v * 1000;
+    if (half === 2 && phases.secondhalf) return phases.secondhalf + (v - 2700) * 1000;
     return null;
   };
   const timeOf = (play) => {
@@ -329,14 +377,15 @@ export function parseEspnSummary(d, { mine = null } = {}) {
         cat: side ? goalCat(side) : 'key',
         side,
         label: `${min} Goal ${teamName} (${prev.h}–${prev.a})${scorer ? ': ' + scorer : ''}`,
+        detail: text,
       });
     } else if (type === 'red-card') {
       const pt = playerAndTeam(text);
-      moments.push({ fid, ...tm, cat: 'card', label: `${min} Red card: ${pt.player || 'player'}${pt.team ? ` (${pt.team})` : ''}` });
+      moments.push({ fid, ...tm, cat: 'card', label: `${min} Red card: ${pt.player || 'player'}${pt.team ? ` (${pt.team})` : ''}`, detail: text });
     } else if (/penalty/.test(type) && !/scored/.test(type)) {
       const pt = playerAndTeam(text);
       const what = /saved/.test(type) ? 'saved' : 'missed';
-      moments.push({ fid, ...tm, cat: 'key', label: `${min} Penalty ${what}${pt.player ? ': ' + pt.player : ''}` });
+      moments.push({ fid, ...tm, cat: 'key', label: `${min} Penalty ${what}${pt.player ? ': ' + pt.player : ''}`, detail: text });
     } else if (/extra-time/.test(type) && /start/.test(type)) {
       moments.push({ fid, ...tm, cat: 'key', label: 'Extra time begins' });
     } else if (/shootout/.test(type) && /start|begin/.test(type)) {
@@ -344,28 +393,60 @@ export function parseEspnSummary(d, { mine = null } = {}) {
     }
   }
 
-  // Commentary: VAR decisions and woodwork
+  // Commentary: VAR, woodwork, big chances, penalties won, added time — plus raw lines for the AI
   const seen = new Set();
+  const context = [];
+  const shortName = (team) => {
+    const side = sideOfTeam(team);
+    return side === 'home' ? home.short : side === 'away' ? away.short : team;
+  };
   for (const c of d.commentary || []) {
     const text = c.text || '';
     const play = c.play || {};
     const clock = c.time || play.clock;
     const min = minuteLabel(clock);
+    if (/^(Attempt|Goal|Own Goal|Penalty|VAR|Corner|Fourth official|Second yellow|.*red card|.*yellow card|Substitution|.*hits the)/i.test(text) && context.length < 140) {
+      context.push(`${min} ${text}`.trim());
+    }
     let label = null;
+    let cat = 'key';
     if (/^VAR Decision/i.test(text)) label = `${min} VAR: ${text.replace(/^VAR Decision:\s*/i, '').replace(/\.$/, '')}`;
-    else {
+    else if (/hits the (left post|right post|post|bar|crossbar)/i.test(text)) {
       const w = text.match(/hits the (left post|right post|post|bar|crossbar)/i);
-      if (w) {
-        const pt = playerAndTeam(text);
-        label = `${min} Off the ${w[1].replace(/left |right /, '')}: ${pt.player}${pt.team ? ` (${pt.team})` : ''}`;
-      }
+      const pt = playerAndTeam(text);
+      label = `${min} Off the ${w[1].replace(/left |right /, '')}: ${pt.player}${pt.team ? ` (${shortName(pt.team)})` : ''}`;
+      cat = 'chance';
+    } else if (/^Attempt (saved|missed|blocked)/i.test(text) && (/(very close range|six yard box)/i.test(text) || (/centre of the box/i.test(text) && !/^Attempt blocked/i.test(text)))) {
+      const pt = playerAndTeam(text.replace(/^Attempt (saved|missed|blocked)\.\s*/i, ''));
+      const how = /saved/i.test(text) ? 'saved' : /blocked/i.test(text) ? 'blocked' : 'missed';
+      const kind = /header/i.test(text) ? 'header' : 'shot';
+      const where = /very close range|six yard box/i.test(text) ? ' from close range' : '';
+      label = `${min} Big chance: ${pt.player}${pt.team ? ` (${shortName(pt.team)})` : ''} ${kind}${where} ${how}`;
+      cat = 'chance';
+    } else if (/^Penalty .*(wins a penalty|Penalty conceded)/i.test(text) || /^Penalty conceded/i.test(text)) {
+      const team = (text.match(/\(([^)]+)\) wins a penalty/i) || [])[1];
+      label = `${min} Penalty${team ? ` to ${shortName(team)}` : ''}`;
+    } else {
+      const add = text.match(/Fourth official has announced (\d+) minutes? of added time/i);
+      if (add && Number(add[1]) > 0) label = `${min} +${add[1]} min added time`;
     }
     if (!label || seen.has(label)) continue;
     seen.add(label);
     const tm = timeOf({ ...play, clock, period: play.period });
     if (!tm) continue;
-    moments.push({ fid: `c${c.sequence ?? play.id ?? label}`, ...tm, cat: 'key', label });
+    moments.push({ fid: `c${c.sequence ?? play.id ?? label}`, ...tm, cat, label, detail: text });
   }
+
+  // Match phases as numbered key moments (like "Lights out" in F1)
+  const scoreAt = (t) => {
+    let h = 0;
+    let a = 0;
+    for (const m of moments) if (/Goal/.test(m.label) && m.side && m.ft <= t) m.side === 'home' ? h++ : a++;
+    return `${h}–${a}`;
+  };
+  if (phases.kickoff) moments.push({ fid: 'ko', ft: phases.kickoff, est: false, cat: 'key', label: `Kick-off: ${home.short} v ${away.short}` });
+  if (phases.halftime) moments.push({ fid: 'ht', ft: phases.halftime, est: false, cat: 'key', label: `Half-time: ${home.short} ${scoreAt(phases.halftime)} ${away.short}` });
+  if (phases.secondhalf) moments.push({ fid: 'sh', ft: phases.secondhalf, est: false, cat: 'key', label: 'Second half under way' });
 
   if (phases.fulltime) {
     moments.push({
@@ -377,7 +458,7 @@ export function parseEspnSummary(d, { mine = null } = {}) {
     });
   }
   moments.sort((a, b) => a.ft - b.ft);
-  return { status, score, home, away, phases, moments, bands: [] };
+  return { status, score, home, away, phases, moments, bands: [], context };
 }
 
 export async function syncEspn(event, opts = {}) {
@@ -544,6 +625,22 @@ export function parseOpenF1(data, myLast, now = Date.now()) {
   const lapStarts = {};
   for (const l of laps) lapStarts[l.lap_number] = t(l.date_start);
 
+  const context = rc
+    .filter((m) => !/^(CLEAR|TRACK LIMITS|BLUE FLAG)|TRACK LIMITS|DELETED|PASS HOLDERS|BLUE FLAG|^CLEAR IN TRACK|YELLOW IN TRACK SECTOR/i.test(String(m.message || '')))
+    .slice(0, 120)
+    .map((m) => `Lap ${m.lap_number || '?'} ${new Date(t(m.date)).toISOString().slice(11, 19)}Z ${m.message}`);
+  if (data.result && data.result.length) {
+    context.push(
+      'Result: ' +
+        data.result
+          .slice()
+          .sort((a, b) => (a.position || 99) - (b.position || 99))
+          .slice(0, 10)
+          .map((r) => `P${r.position} ${nameOf(r.driver_number)}${r.dnf ? ' DNF' : ''}`)
+          .join(', '),
+    );
+  }
+
   const maxLap = rc.reduce((a, m) => Math.max(a, m.lap_number || 0), 0);
   const state = finishT ? 'post' : lightsOut ? 'in' : 'pre';
   moments.sort((a, b) => a.ft - b.ft);
@@ -554,6 +651,7 @@ export function parseOpenF1(data, myLast, now = Date.now()) {
     phases: {},
     lapStarts,
     lightsOut,
+    context,
     myDriver: myName ? { name: myName, full: titleName(me.full_name), number: myNum, won: result && result.position === 1, leadInvolved: myLeadInvolved } : null,
     result,
   };

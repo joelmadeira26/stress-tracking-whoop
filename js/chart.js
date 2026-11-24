@@ -10,6 +10,7 @@ import {
   numberedMoments,
   sessionEnd,
   clockTime,
+  chartDomain,
 } from './analysis.js';
 
 export const FONT_NUM = "'Barlow Condensed', 'Arial Narrow', 'Roboto Condensed', sans-serif";
@@ -272,10 +273,10 @@ export function drawChart(painter, session, x0, y0, W, H, opts = {}) {
   const rest = opts.restingHr ?? 60;
   const k = opts.scale || 1;
   const compact = W < 520;
-  const start = session.startTs;
-  let end = opts.now || sessionEnd(session);
-  if (opts.now) end = Math.max(end, start + 5 * 60 * 1000);
+  const { start, end } = chartDomain(session, opts.now);
   const span = end - start;
+  const recStart = session.startTs;
+  const recEnd = opts.now || sessionEnd(session);
 
   const moments = numberedMoments(session);
   const radius = (compact ? 6.5 : 7.5) * k;
@@ -299,7 +300,15 @@ export function drawChart(painter, session, x0, y0, W, H, opts = {}) {
   // Data
   const hr10 = bucketHr(session.samples, start, end, 10 * 1000);
   // Stress: smoothed over ~4 min and drawn every 2 min (like the reference: calm, readable swings).
-  const tenRaw = smooth(tensionSeries(session, rest).series.filter((p) => p.t <= end + 1), 4);
+  // Stress only where there is heart-rate data behind it (never across a gap or outside your session).
+  const inGaps = findGaps(session.samples, recStart, recEnd);
+  const covered = (t) => t >= recStart + 50000 && t <= recEnd + 1000 && !inGaps.some((g) => t > g.start && t < g.end + 50000);
+  const tenRaw = smooth(
+    tensionSeries(session, rest)
+      .series.filter((p) => p.t <= end + 1)
+      .map((p) => (covered(p.t) ? p : { ...p, value: null })),
+    4,
+  );
   const ten = tenRaw.filter((p, i) => i % 4 === 0 || i === tenRaw.length - 1 || p.value == null || (tenRaw[i + 1] && tenRaw[i + 1].value == null) || (tenRaw[i - 1] && tenRaw[i - 1].value == null));
   const vals = hr10.filter((b) => b.avg != null).map((b) => b.avg);
   let lo = vals.length ? Math.min(...vals) : rest;
@@ -330,14 +339,17 @@ export function drawChart(painter, session, x0, y0, W, H, opts = {}) {
     }
   }
 
-  // Gaps (strap lost)
-  for (const g of findGaps(session.samples, start, end)) {
-    const gx = xf(g.start);
-    const gw = xf(g.end) - gx;
-    if (gw < 1) continue;
+  // Before / after your session (event context only) and gaps where the strap dropped out
+  const shade = (a, b, label) => {
+    const gx = Math.max(plotX, xf(a));
+    const gw = Math.min(plotX + plotW, xf(b)) - gx;
+    if (gw < 1) return;
     painter.rect(gx, plotY, gw, plotH, { fill: '#000000', opacity: 0.25 });
-    if (gw > 46 * k) painter.text(gx + gw / 2, plotY + 12 * k, 'NO SIGNAL', { size: 8 * k, anchor: 'middle', fill: COLORS.muted, spacing: 0.5 * k });
-  }
+    if (gw > 62 * k) painter.text(gx + gw / 2, plotY + 12 * k, label, { size: 8 * k, anchor: 'middle', fill: COLORS.muted, spacing: 0.5 * k });
+  };
+  if (recStart > start + 1000) shade(start, recStart, 'NOT RECORDING');
+  if (recEnd < end - 1000) shade(recEnd, end, 'NOT RECORDING');
+  for (const g of inGaps) shade(g.start, g.end, 'NO SIGNAL');
 
   // Grid + axes
   for (let v = lo; v <= hi; v += step) {
@@ -356,10 +368,10 @@ export function drawChart(painter, session, x0, y0, W, H, opts = {}) {
   const endX = plotX + plotW;
   const endLabel = timeTick(end);
   painter.text(endX, plotY + plotH + 16 * k, endLabel, { size: 10.5 * k, anchor: 'end', fill: COLORS.text, weight: 700 });
-  const endLabelW = endLabel.length * 6.2 * k + 8 * k;
+  const endLabelW = endLabel.length * 6.6 * k + 10 * k;
   for (let t = Math.ceil(start / stepMs) * stepMs; t <= end; t += stepMs) {
     const x = xf(t);
-    if (x > endX - endLabelW - 18 * k || x < plotX + 24 * k) continue;
+    if (x > endX - endLabelW - 18 * k || x < plotX + 24 * k || timeTick(t) === endLabel) continue;
     painter.text(x, plotY + plotH + 16 * k, timeTick(t), { size: 10.5 * k, anchor: 'middle', fill: COLORS.muted, weight: 500 });
   }
 

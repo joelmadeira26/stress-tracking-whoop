@@ -1,5 +1,5 @@
 // Pure data functions: bucketing, tension estimate, match clock, stats.
-import { CALM_MARGIN, SESSION_TYPES, CATEGORIES } from './config.js';
+import { CALM_MARGIN, SESSION_TYPES, CATEGORIES, typeOf } from './config.js';
 
 const SEC = 1000;
 const MIN = 60 * SEC;
@@ -47,7 +47,7 @@ export function minuteToTime(session, input) {
   if (!m) return null;
   const base = parseInt(m[1], 10);
   const extra = m[2] ? parseInt(m[2], 10) : 0;
-  const type = SESSION_TYPES[session.type];
+  const type = typeOf(session.type);
   if (type && type.clock === 'match') {
     const p = session.phases || {};
     const ko = p.kickoff || session.startTs;
@@ -76,7 +76,7 @@ export function clockTime(t) {
 /** Label used for a moment in legends: match minute for sport, clock time otherwise. */
 export function momentTimeLabel(session, t, tag) {
   if (session.feed) return (tag && tag.est ? '~' : '') + clockTime(t);
-  const type = SESSION_TYPES[session.type];
+  const type = typeOf(session.type);
   if (type && type.clock === 'match') {
     const mm = matchMinute(session, t);
     return mm === 'Pre' ? clockTime(t) : mm;
@@ -290,7 +290,7 @@ export function displayTitle(session) {
     const sc = session.score || { home: 0, away: 0 };
     return `${session.teams.home} ${sc.home}–${sc.away} ${session.teams.away}`;
   }
-  return session.title || SESSION_TYPES[session.type]?.label || 'Session';
+  return session.title || typeOf(session.type).label || 'Session';
 }
 
 /** Recompute score and goal labels from tags (used after undo / adding forgotten goals). */
@@ -388,42 +388,129 @@ export function applyFeed(session, now = Date.now()) {
   if (!f) return session;
   if (session.calib) resolveCalibration(session);
   const d = session.delayMs ?? 40000;
-  const startT = session.startTs;
-  const endT = session.endTs || now;
+  // Show the whole event around your session — even moments from before you joined — but
+  // only what has already reached your stream (feed time + delay <= now).
+  const lower = session.startTs - LOOKBACK_MS;
+  const upper = now;
   const labels = categoryLabels(session);
+  const ai = session.ai || {};
+  const aiMoments = ai.moments || {};
+  const aiReactions = ai.reactions || {};
   const manual = (session.tags || []).filter((g) => !g.auto);
   const auto = (f.moments || [])
-    .filter((m) => m.ft + d >= startT && m.ft + d <= endT)
+    .filter((m) => m.ft + d >= lower && m.ft + d <= upper)
     .map((m) => ({
       id: 'f:' + m.fid,
+      fid: m.fid,
       t: m.ft + d,
       auto: true,
       est: !!m.est || !session.delayCalibrated,
       cat: m.cat,
-      label: m.label,
+      label: aiMoments[m.fid] || m.label,
+      baseLabel: m.label,
       color: (CATEGORIES[m.cat] || CATEGORIES.key).color,
       catLabel: labels[m.cat] || m.cat,
     }));
+  const reactions = (session.reactions || []).map((r) => ({
+    id: 'r:' + r.key,
+    rkey: r.key,
+    t: r.t,
+    auto: true,
+    est: false,
+    cat: 'reaction',
+    label: aiReactions[r.key] || r.label,
+    baseLabel: r.label,
+    color: CATEGORIES.reaction.color,
+    catLabel: labels.reaction,
+  }));
   for (const g of manual) if (g.cat) g.catLabel = labels[g.cat] || g.catLabel;
-  session.tags = [...manual, ...auto];
+  session.tags = [...manual, ...auto, ...reactions];
   session.bands = [
     ...(session.bands || []).filter((b) => !b.auto),
     ...(f.bands || [])
-      .filter((b) => b.end + d >= startT && b.start + d <= endT)
+      .filter((b) => b.end + d >= lower && b.start + d <= upper)
       .map((b) => ({
         key: b.cat,
         label: b.label,
         color: (CATEGORIES[b.cat] || CATEGORIES.key).color,
-        start: Math.max(b.start + d, startT),
-        end: Math.min(b.end + d, endT),
+        start: Math.max(b.start + d, lower),
+        end: Math.min(b.end + d, upper),
         auto: true,
       })),
   ];
   const ph = f.phases || {};
   session.phases = {};
-  for (const k of Object.keys(ph)) if (ph[k] + d <= endT) session.phases[k] = ph[k] + d;
+  for (const k of Object.keys(ph)) if (ph[k] + d <= upper) session.phases[k] = ph[k] + d;
   if (f.score) session.score = { ...f.score };
   return session;
+}
+
+export const LOOKBACK_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Time range the chart shows: your session, widened to include the event's moments
+ * (so joining at 87' still shows kick-off, chances and goals), capped at 3 h before you started.
+ */
+export function chartDomain(session, now) {
+  let start = session.startTs;
+  let end = now || sessionEnd(session);
+  for (const g of session.tags || []) {
+    if (g.t < start - 90000) start = g.t - 90000;
+    if (!now && g.t > end - 60000) end = g.t + 90000;
+  }
+  for (const b of session.bands || []) {
+    if (b.start < start) start = b.start - 60000;
+    if (!now && b.end > end) end = b.end + 60000;
+  }
+  start = Math.max(start, session.startTs - LOOKBACK_MS);
+  if (end - start < 5 * 60000) end = start + 5 * 60000;
+  return { start, end };
+}
+
+/**
+ * Find heart-rate spikes that no feed event explains — your own reactions.
+ * Returns up to 3: { key, t (start of the rise), bpm, rise, label }.
+ */
+export function detectReactions(session, restingHr) {
+  const samples = session.samples || [];
+  if (samples.length < 120) return [];
+  const start = session.startTs;
+  const end = sessionEnd(session);
+  const b = bucketHr(samples, start, end, 30000);
+  const cands = [];
+  for (let i = 4; i < b.length; i++) {
+    const v = b[i].avg;
+    if (v == null) continue;
+    const prev = b.slice(Math.max(0, i - 6), i).map((x) => x.avg).filter((x) => x != null);
+    if (prev.length < 3) continue;
+    const base = Math.min(...prev);
+    const rise = v - base;
+    if (rise < 10 || v < restingHr + 12) continue;
+    let isMax = true;
+    for (let j = Math.max(0, i - 3); j <= Math.min(b.length - 1, i + 3); j++) if (b[j].avg != null && b[j].avg > v) isMax = false;
+    if (!isMax) continue;
+    let k = i;
+    for (let j = i - 1; j >= Math.max(0, i - 6); j--) {
+      if (b[j].avg != null && b[j].avg >= base + rise * 0.3) k = j;
+      else break;
+    }
+    cands.push({ t: b[k].t - 15000, peakT: b[i].t, bpm: b[i].max || Math.round(v), rise });
+  }
+  const feedTimes = (session.tags || []).filter((g) => g.auto && g.cat !== 'reaction').map((g) => g.t);
+  const picked = [];
+  for (const c of cands.sort((x, y) => y.rise - x.rise)) {
+    if (picked.some((p) => Math.abs(p.t - c.t) < 5 * 60000)) continue;
+    if (feedTimes.some((ft) => ft >= c.t - 180000 && ft <= c.peakT + 20000)) continue; // explained by an event
+    picked.push(c);
+    if (picked.length >= 3) break;
+  }
+  return picked
+    .sort((x, y) => x.t - y.t)
+    .map((c) => {
+      const mm = session.teams ? matchMinute(session, c.t) : '';
+      const pre = /\d/.test(mm) ? `${mm} ` : '';
+      return { key: 'p' + Math.round(c.t / 60000), t: c.t, bpm: c.bpm, rise: Math.round(c.rise), label: `${pre}Your heart rate jumps to ${c.bpm} bpm` };
+    });
 }
 
 /** Unique legend categories in order of appearance: [{label, color}] */

@@ -105,12 +105,20 @@ async function newPhone(opts = {}) {
   await mockFeeds(ctx);
   await ctx.route('https://api.anthropic.com/**', async (route) => {
     const req = route.request();
-    apiCalls.push({ headers: req.headers(), body: JSON.parse(req.postData()) });
+    const body = JSON.parse(req.postData());
+    apiCalls.push({ headers: req.headers(), body });
+    const data = JSON.parse(body.messages[0].content.split('\n\n').slice(1).join('\n\n'));
+    const out = {
+      headline: 'Ice-cold until the penalty, then pure nerves',
+      writeup: 'Your heart rate peaked at 112 bpm right after the second goal.\n\nTakeaway: breathe out slowly during VAR checks.',
+      caption: 'I tracked my heart rate and stress during the match. Peak 112 bpm 🫀 #WHOOP #Pulse',
+      moments: data.moments.map((m) => ({ id: m.id, text: `AI · ${m.label}` })),
+    };
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       headers: { 'access-control-allow-origin': '*' },
-      body: JSON.stringify({ model: 'claude-sonnet-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: MOCK_TEXT }] }),
+      body: JSON.stringify({ model: 'claude-sonnet-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(out) }] }),
     });
   });
   return ctx;
@@ -129,7 +137,10 @@ try {
   await page.clock.install({ time: new Date(T0 + 30 * 60000) });
   await page.goto(BASE);
   await page.waitForSelector('.fx');
+  check('Meeting + Other match on top, no Workout', (await page.locator('.others.two .otherbtn').count()) === 2 && (await page.locator('[data-start="workout"]').count()) === 0);
+  check('games grouped under Sports', (await page.locator('.section-title h3', { hasText: 'Sports' }).count()) === 1);
   check('live match card shown first', (await page.locator('.fxlist').first().innerText()).includes('Sporting CP') && (await page.locator('.livebadge').count()) === 1);
+  check('"Your teams & driver" group', (await page.locator('.subhead', { hasText: 'Your teams' }).count()) === 1);
   check('my team highlighted', (await page.locator('.fx-row.mine').first().innerText()).includes('Sporting'));
   check('F1 race listed', (await page.locator('.fx', { hasText: 'Qatar Grand Prix' }).count()) === 1);
   check('upcoming Clássico listed', (await page.locator('.fx', { hasText: 'FC Porto' }).count()) === 1);
@@ -139,14 +150,15 @@ try {
   await page.fill('#sKey', 'sk-ant-test-key');
   await page.fill('#sRest', '58');
   await page.click('#sSave');
-  for (const k of ['sport', 'f1', 'meeting', 'workout']) {
+  check('no workout demo', (await page.locator('[data-demo="workout"]').count()) === 0);
+  for (const k of ['sport', 'f1', 'meeting']) {
     await page.goto(BASE + '#/settings');
     await page.click(`[data-demo="${k}"]`);
-    await page.waitForSelector('#dChart svg');
+    await page.waitForSelector('#dHero img');
   }
   await page.goto(BASE + '#/history');
   await page.waitForSelector('.hist li');
-  check('history lists 4 demos', (await page.locator('.hist li').count()) === 4);
+  check('history lists 3 demos', (await page.locator('.hist li').count()) === 3);
   check('history comparison shown', (await page.locator('.compare').count()) === 1);
   await page.click('.chip[data-f="meeting"]');
   await page.waitForSelector('.chip.on[data-f="meeting"]');
@@ -156,11 +168,10 @@ try {
 
   // F1 demo detail = the reference look
   await page.locator('.hist li a', { hasText: 'Las Vegas' }).click();
-  await page.waitForSelector('#dChart svg');
-  check('F1 story line', (await page.locator('.story').innerText()).startsWith("Max Verstappen's race, Las Vegas Grand Prix"));
-  check('F1 category key', (await page.locator('.catkey').innerText()).includes('Max loses and retakes the lead'));
-  check('F1 has 10 moments', (await page.locator('.mlist li').count()) === 10);
-  check('heading in caps', (await page.locator('.cc-title').innerText()).startsWith('HEART RATE & STRESS'));
+  await page.waitForSelector('#dHero img');
+  check('session page shows the shareable chart image (reference layout)', (await page.locator('#dHero img').getAttribute('alt')).startsWith("Max Verstappen's race, Las Vegas Grand Prix"));
+  const heroW = await page.evaluate(() => document.querySelector('#dHero img').naturalWidth);
+  check(`hero image is the Classic export (${heroW} px)`, heroW === 1520);
   check('no horizontal overflow on phone', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
   await page.screenshot({ path: 'tests/screens/03-f1-detail-phone.png', fullPage: true });
   await page.click('#dShare');
@@ -186,18 +197,23 @@ try {
   // Football demo detail + write-up + export
   await page.goto(BASE + '#/history');
   await page.locator('.hist li a', { hasText: 'Sporting CP 2–1' }).click();
-  await page.waitForSelector('#dChart svg');
-  check('football legend has goals in green/red categories', (await page.locator('.catkey').innerText()).includes('Goal Sporting CP') && (await page.locator('.catkey').innerText()).includes('Goal FC Porto'));
-  check('scoreboard header', (await page.locator('.scoreboard .sb-score').innerText()) === '2–1');
+  await page.waitForSelector('#dHero img');
+  check('title shows the score', (await page.locator('h1').innerText()).includes('Sporting CP 2–1 FC Porto'));
   await page.click('#wRegen');
   await page.waitForSelector('.writeup p:first-child:has-text("Ice-cold")');
+  await page.waitForSelector('#dHero img');
+  const aiTags = await page.evaluate(async () => (await window.__pulse.db.allSessions()).find((x) => x.type === 'sport').tags.filter((g) => /^AI · /.test(g.label)).length);
+  check(`AI rewrote the chart captions (${aiTags})`, aiTags >= 8);
+  check('AI suggested post shown', (await page.locator('.ai-caption').innerText()).includes('I tracked my heart rate'));
   const call = apiCalls.at(-1);
   check('API headers', call.headers['x-api-key'] === 'sk-ant-test-key' && call.headers['anthropic-version'] === '2023-06-01' && call.headers['anthropic-dangerous-direct-browser-access'] === 'true');
   check('API model default', call.body.model === 'claude-sonnet-5-5');
   const sent = JSON.parse(call.body.messages[0].content.split('\n\n').slice(1).join('\n\n'));
-  check('API payload: resting HR, score, moments with source', sent.restingHr === 58 && sent.finalScore === '2-1' && sent.moments.some((m) => m.source === 'live data') && sent.moments.some((m) => m.source === 'you'));
+  check('API payload: resting HR, score, moment ids, structured output', sent.restingHr === 58 && sent.finalScore === '2-1' && sent.moments.every((m) => typeof m.id === 'string') && call.body.output_config.format.type === 'json_schema');
   await page.screenshot({ path: 'tests/screens/05-football-detail-phone.png', fullPage: true });
   await page.click('#dShare');
+  await page.waitForSelector('#shPrev img');
+  check('share caption defaults to the AI post', (await page.inputValue('#shCap')).startsWith('I tracked my heart rate and stress during the match. Peak 112 bpm'));
   await page.click('#shFmt [data-f="classic"]');
   await page.waitForSelector('#shPrev[data-f="classic"] img');
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#shSave')]);
@@ -264,12 +280,14 @@ try {
   await lp.clock.runFor(25000);
   check('score from live data', (await lp.locator('#liveScore').innerText()) === '1–0');
   check('match clock from feed kick-off (31\')', /^3[01]'$/.test(await lp.locator('#liveClock').innerText()));
-  check('goal before I started is not plotted', (await lp.locator('#liveMoments li .l').count()) === 0);
+  const liveLabels = async () => lp.$$eval('#liveMoments li .l', (els) => els.map((e) => e.textContent));
+  check('match context shown even though I joined at 30\' (kick-off + 11\' goal)', (await liveLabels()).some((l) => l.startsWith("11' Goal Sporting CP")) && (await liveLabels()).some((l) => l.startsWith('Kick-off')));
+  check('no manual reaction buttons, free text or undo', (await lp.locator('[data-react], #freeText, #undoBtn').count()) === 0);
   await lp.clock.runFor(4 * 60000);
   await lp.evaluate(() => (window.__fakeHR.hr = 112));
   feed.goals.push({ side: 'away', min: 35, at: await lp.evaluate(() => Date.now()), who: 'Bruno Fernandes' });
   await lp.clock.runFor(21000); // next poll picks it up; not on TV yet (40 s delay)
-  check('new goal not shown before it reaches the TV', (await lp.locator('#liveMoments li .l').count()) === 0);
+  check('new goal not shown before it reaches the stream', !(await liveLabels()).some((l) => l.startsWith("35'")));
   check('"Just saw it" offered', (await lp.locator('#calBtn').count()) === 1);
   await lp.clock.runFor(9000); // the TV shows it ~30 s after the feed
   await lp.click('#calBtn');
@@ -286,9 +304,10 @@ try {
   await lp.click('#syGo');
   const d = await lp.evaluate(() => window.__pulse.state.live.delayMs);
   check(`typed clock ${typed} → stream delay ≈75 s (${d} ms)`, d >= 75000 && d < 76000 && /stream delay 7[56] s \(synced\)/.test(await lp.locator('#feedLine').innerText()));
-  check('goal hidden again until it reaches the (later) stream', (await lp.evaluate(() => window.__pulse.state.live.tags.filter((g) => g.auto).length)) === 0);
+  const goal35 = () => lp.evaluate(() => window.__pulse.state.live.tags.find((g) => /^35'/.test(g.label)));
+  check('goal hidden again until it reaches the (later) stream', !(await goal35()));
   await lp.clock.runFor(50000);
-  check('goal re-appears at feed time + new delay', (await lp.evaluate(() => window.__pulse.state.live.tags.find((g) => g.auto).t)) === feed.goals[1].at + d);
+  check('goal re-appears at feed time + new delay', (await goal35()).t === feed.goals[1].at + d);
   check('sync remembered as default', Math.abs((await lp.evaluate(() => JSON.parse(localStorage.getItem('pulse.settings')).delaySec)) - 75) <= 1);
   await lp.click('#syncBtn');
   await lp.fill('#syVal', '9x');
@@ -297,8 +316,6 @@ try {
   await lp.click('#syCancel');
   await lp.clock.runFor(60000);
   await lp.evaluate(() => (window.__fakeHR.hr = 84));
-  await lp.click('[data-react="Furious"]');
-  check('reaction tagged with match minute', /^3\d' Furious$/.test(await lp.locator('#liveMoments li .l').first().innerText()));
   await lp.clock.runFor(10 * 60000);
   feed.halftime = await lp.evaluate(() => Date.now());
   await lp.clock.runFor(60000);
@@ -331,8 +348,10 @@ try {
   await lp.click('#eSave');
   await lp.waitForSelector('.writeup p:first-child:has-text("Ice-cold")', { timeout: 15000 });
   check('saved: title with live score', (await lp.locator('h1').innerText()).includes('Sporting CP 1–1 Man United'));
-  check('saved: story line mentions kick-off', (await lp.locator('.story').innerText()).includes('kick-off'));
-  check('saved: goal + reaction in list', (await lp.locator('.mlist li').count()) === 2);
+  await lp.waitForSelector('#dHero img');
+  check('saved: chart story mentions kick-off', (await lp.locator('#dHero img').getAttribute('alt')).includes('kick-off'));
+  const saved = await lp.evaluate(async () => (await window.__pulse.db.allSessions())[0].tags.map((g) => g.label));
+  check(`saved: whole match story (${saved.length} moments)`, saved.length >= 4 && saved.every((l) => /^AI · /.test(l)));
   check('live autosave cleared after save', !(await lp.evaluate(() => window.__pulse.db.getLive())));
   await lp.screenshot({ path: 'tests/screens/09-saved-linked.png', fullPage: true });
 
@@ -364,14 +383,14 @@ try {
   watch(dp);
   await dp.goto(BASE + '#/settings');
   await dp.click('[data-demo="f1"]');
-  await dp.waitForSelector('#dChart svg');
-  const dw = await dp.evaluate(() => Number(document.querySelector('#dChart svg').getAttribute('width')));
+  await dp.waitForSelector('#dHero img');
+  const dw = await dp.evaluate(() => document.querySelector('#dHero img').getBoundingClientRect().width);
   check(`desktop chart width (${dw})`, dw > 650);
   await dp.screenshot({ path: 'tests/screens/10-detail-desktop.png', fullPage: true });
   await dp.setViewportSize({ width: 360, height: 800 });
   await dp.waitForTimeout(400);
-  const rw = await dp.evaluate(() => Number(document.querySelector('#dChart svg').getAttribute('width')));
-  check(`chart redraws on resize to 360 (${rw})`, rw < 340);
+  const rw = await dp.evaluate(() => document.querySelector('#dHero img').getBoundingClientRect().width);
+  check(`chart fits a 360 px phone (${rw})`, rw <= 330 && rw > 300);
   check('no overflow at 360', await dp.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
   await dp.screenshot({ path: 'tests/screens/11-detail-360.png', fullPage: true });
 

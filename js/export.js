@@ -1,5 +1,5 @@
 // Shareable PNG (2x): title, date/time range, chart, numbered legend, Pulse mark.
-import { COLORS, SESSION_TYPES } from './config.js';
+import { COLORS, SESSION_TYPES, typeOf } from './config.js';
 import { CanvasPainter, drawChart, FONT_NUM, FONT_TEXT } from './chart.js';
 import { numberedMoments, displayTitle, clockTime, sessionEnd, legendCategories, sessionStats } from './analysis.js';
 
@@ -39,7 +39,7 @@ export function storyLine(session) {
     const comp = ev && ev.competition ? `, ${ev.competition}` : '';
     return `${displayTitle(session)}${comp} (your clock${ko ? `, kick-off ${clockTime(ko)}` : ''})`;
   }
-  return `${session.title} · ${SESSION_TYPES[session.type].label} (your clock)`;
+  return `${session.title} · ${typeOf(session.type).label} (your clock)`;
 }
 
 function wrap(ctx, text, maxW, maxLines = 3) {
@@ -256,7 +256,7 @@ export async function renderShareImage(session, restingHr, format = 'classic', s
   // ----- title block (post / story) -----
   if (hasTitle) {
     drawMark(ctx, W - pad, pad + 14, 14);
-    const typeLabel = SESSION_TYPES[session.type].label.toUpperCase();
+    const typeLabel = typeOf(session.type).label.toUpperCase();
     const comp = session.event && session.event.competition ? session.event.competition.toUpperCase() : typeLabel;
     ctx.fillStyle = COLORS.muted;
     ctx.font = `600 10px ${FONT_TEXT}`;

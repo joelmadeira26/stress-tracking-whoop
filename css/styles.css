@@ -356,3 +356,20 @@ input:focus, select:focus, textarea:focus { border-color: var(--hr); }
 .fmt button.on { border-color: var(--text); background: var(--panel2); }
 .preview { margin-top: 12px; border-radius: 12px; background: #07090d; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; min-height: 220px; max-height: 52vh; overflow: hidden; padding: 8px; }
 .preview img { display: block; max-width: 100%; max-height: calc(52vh - 16px); object-fit: contain; border-radius: 6px; }
+
+/* v4: Home "Sports", session page hero, AI card */
+.others.two { grid-template-columns: 1fr 1fr; margin-top: 4px; }
+.subhead { display: flex; align-items: center; gap: 8px; margin: 18px 2px 10px; font-weight: 600; font-size: 15px; }
+.subhead svg { width: 16px; height: 16px; color: var(--tension); }
+.subhead .livedot { margin-right: 0; }
+.dayhead { margin: 14px 2px 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+.morebtn { display: block; margin: 8px auto 0; }
+.hero { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 240px; border-radius: 14px; overflow: hidden; background: #0b0d12; border: 1px solid var(--line); margin-bottom: 12px; color: var(--muted); text-decoration: none; }
+.hero img { display: block; width: 100%; height: auto; }
+.detail-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.detail-actions .btn svg { width: 18px; height: 18px; }
+.ai-card h3 { display: flex; align-items: center; gap: 6px; }
+.ai-card h3 svg { width: 16px; height: 16px; color: var(--tension); }
+.ai-caption { margin: 6px 0 10px; padding: 10px 12px; border-radius: 10px; background: var(--bg2); border: 1px solid var(--line); }
+.ai-caption p { margin: 4px 0 0; font-family: var(--txt) !important; font-size: 14px !important; font-weight: 400 !important; white-space: pre-line; }
+.live-foot.one { grid-template-columns: 1fr; }

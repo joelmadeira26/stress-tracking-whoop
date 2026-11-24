@@ -1,5 +1,5 @@
 // Pulse — UI, routing and live-session logic.
-import { SESSION_TYPES, FREE_TAG, ICONS, COLORS, CATEGORIES, REACTIONS, COMPETITIONS, DEFAULT_FOLLOW, TEAM_SEARCH_LEAGUES } from './config.js';
+import { SESSION_TYPES, typeOf, FREE_TAG, ICONS, COLORS, CATEGORIES, REACTIONS, COMPETITIONS, DEFAULT_FOLLOW, TEAM_SEARCH_LEAGUES } from './config.js';
 import { Strap, bluetoothSupport } from './ble.js';
 import { SampleAggregator } from './hr.js';
 import { db, loadSettings, saveSettings, loadFollow, saveFollow, uid } from './db.js';
@@ -17,6 +17,7 @@ import {
   tensionSeries,
   sessionEnd,
   applyFeed,
+  detectReactions,
   legendCategories,
   parseMatchClock,
   MAX_DELAY_MS,
@@ -268,7 +269,7 @@ function bannerHtml() {
 }
 
 function typeIcon(type) {
-  return icon(SESSION_TYPES[type]?.icon || 'heart');
+  return icon(typeOf(type).icon || 'heart');
 }
 
 function sessionListHtml(list) {
@@ -291,6 +292,11 @@ function sessionListHtml(list) {
 
 /* ---------------- Home: live & upcoming ---------------- */
 
+function dayShort(t) {
+  const l = dayLabel(t);
+  return l === 'Today' || l === 'Tomorrow' ? l : new Date(t).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
 function dayLabel(t) {
   const d = new Date(t);
   const today = new Date();
@@ -301,11 +307,17 @@ function dayLabel(t) {
   return d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' });
 }
 
-function fixtureCard(ev) {
+function fixtureCard(ev, withDay = false) {
   const live = ev.state === 'in';
   const done = ev.state === 'post';
   const soon = !live && !done && ev.date - Date.now() < 90 * 60000;
-  const when = live ? `<span class="livebadge">LIVE</span> ${esc(ev.detail || '')}` : done ? esc(ev.detail || 'FT') : clockTime(ev.date);
+  const when = live
+    ? `<span class="livebadge">LIVE</span> ${esc(ev.detail || '')}`
+    : done
+      ? esc(ev.detail || 'FT')
+      : withDay
+        ? `${esc(dayShort(ev.date))} ${clockTime(ev.date)}`
+        : clockTime(ev.date);
   const btn = `<button class="btn ${live || soon ? 'primary' : ''} watchbtn" data-watch="${esc(ev.key)}">${icon('tv')}Watch</button>`;
   if (ev.source === 'openf1') {
     const drv = state.follow.drivers[0];
@@ -342,21 +354,29 @@ function fixturesHtml(res) {
   if (!evs.length) {
     return `<div class="empty">${res.errors && res.errors === res.total ? "Couldn't load fixtures. Check your connection." : 'Nothing live or coming up in the next 9 days.'} <a href="#/following">Edit what you follow</a></div>`;
   }
+  const isMine = (e) => e.source === 'openf1' || !!e.mine;
   const live = evs.filter((e) => e.state === 'in');
-  const upcoming = evs.filter((e) => e.state !== 'in');
+  const mine = evs.filter((e) => e.state !== 'in' && isMine(e));
+  const rest = evs.filter((e) => e.state !== 'in' && !isMine(e));
   let html = '';
-  if (live.length) html += `<div class="section-title"><h3><span class="livedot"></span>Live now</h3></div><div class="fxlist">${live.map(fixtureCard).join('')}</div>`;
-  let lastDay = '';
-  for (const e of upcoming.slice(0, 24)) {
-    const d = dayLabel(e.date);
-    if (d !== lastDay) {
-      if (lastDay) html += '</div>';
-      html += `<div class="section-title"><h3>${esc(d)}</h3></div><div class="fxlist">`;
-      lastDay = d;
+  if (live.length) html += `<div class="subhead"><span class="livedot"></span>Live now</div><div class="fxlist">${live.map(fixtureCard).join('')}</div>`;
+  if (mine.length) html += `<div class="subhead">${icon('star')}Your teams &amp; driver</div><div class="fxlist">${mine.slice(0, 8).map((e) => fixtureCard(e, true)).join('')}</div>`;
+  if (rest.length) {
+    const shown = state.showAllFixtures ? rest.slice(0, 40) : rest.slice(0, 4);
+    html += `<div class="subhead">More from your competitions</div>`;
+    let lastDay = '';
+    for (const e of shown) {
+      const d = dayLabel(e.date);
+      if (d !== lastDay) {
+        if (lastDay) html += '</div>';
+        html += `<div class="dayhead">${esc(d)}</div><div class="fxlist">`;
+        lastDay = d;
+      }
+      html += fixtureCard(e);
     }
-    html += fixtureCard(e);
+    if (lastDay) html += '</div>';
+    if (rest.length > 4) html += `<button class="linkbtn morebtn" id="fxMore">${state.showAllFixtures ? 'Show fewer' : `Show all ${rest.length} games`}</button>`;
   }
-  if (lastDay) html += '</div>';
   return html;
 }
 
@@ -369,20 +389,29 @@ async function renderHome() {
     <div class="topbar"><div class="brand grow">${PULSE_MARK}PULSE</div>${strapChipHtml()}</div>
     ${bannerHtml()}
     ${liveBanner}
-    <div id="fixtures">${fixturesHtml(state.fixtures)}</div>
-    <div class="section-title"><h3>Other sessions</h3></div>
-    <div class="others">
+    <div class="others two">
       <button class="otherbtn" data-start="meeting">${icon('chat')}<span>Meeting</span></button>
-      <button class="otherbtn" data-start="workout">${icon('bolt')}<span>Workout</span></button>
       <button class="otherbtn" data-start="sport">${icon('ball')}<span>Other match</span></button>
     </div>
+    <div class="section-title"><h3>Sports</h3><a href="#/following" class="small">Edit</a></div>
+    <div id="fixtures">${fixturesHtml(state.fixtures)}</div>
     <div class="section-title"><h3>Recent sessions</h3>${sessions.length > 4 ? '<a href="#/history" class="small">See all</a>' : ''}</div>
     ${sessionListHtml(sessions.slice(0, 4))}
   `;
   bindStrapChip();
   renderStrapBits();
   $$('[data-start]').forEach((b) => b.addEventListener('click', () => go(`#/start/${b.dataset.start}`)));
-  const bindWatch = () =>
+  const bindWatch = () => {
+    const more = $('#fxMore');
+    if (more)
+      more.addEventListener('click', () => {
+        state.showAllFixtures = !state.showAllFixtures;
+        $('#fixtures').innerHTML = fixturesHtml(state.fixtures);
+        bindWatch();
+      });
+    bindWatchButtons();
+  };
+  const bindWatchButtons = () =>
     $$('[data-watch]').forEach((b) =>
       b.addEventListener('click', () => {
         const ev = state.fixtures.events.find((e) => e.key === b.dataset.watch);
@@ -595,7 +624,7 @@ window.addEventListener('pagehide', () => {
 });
 
 function nextPhase(s) {
-  const phases = SESSION_TYPES[s.type].phases || [];
+  const phases = typeOf(s.type).phases || [];
   return phases.find((p) => !(s.phases || {})[p.key]) || null;
 }
 function openBand(s) {
@@ -603,7 +632,7 @@ function openBand(s) {
 }
 
 function liveClock(s, now) {
-  const type = SESSION_TYPES[s.type];
+  const type = typeOf(s.type);
   if (type.clock === 'match') {
     const mm = matchMinute(s, now);
     const ph = matchPhase(s, now);
@@ -636,7 +665,7 @@ function addTag(def, extra = {}) {
   } else s.tags.push(tag);
   state.undo.push({ kind: 'tag', id: tag.id });
   buzz(30);
-  const when = SESSION_TYPES[s.type].clock === 'match' ? matchMinute(s, t) : elapsedLabel(t - s.startTs);
+  const when = typeOf(s.type).clock === 'match' ? matchMinute(s, t) : elapsedLabel(t - s.startTs);
   toast(`${tag.label}${/^\d/.test(tag.label) ? '' : ' · ' + when}`);
   db.saveLive(s).catch(() => {});
   refreshLive(true);
@@ -763,7 +792,7 @@ function renderLive() {
   const s = state.live;
   if (!s) return go('#/');
   if (s.ended) return go('#/end');
-  const type = SESSION_TYPES[s.type];
+  const type = typeOf(s.type);
   const linked = !!s.event;
   requestWakeLock();
   if (linked) applyFeed(s);
@@ -784,7 +813,7 @@ function renderLive() {
   }
 
   const tagButtons = linked
-    ? REACTIONS.map((r) => `<button class="tagbtn" data-react="${esc(r)}"><span class="sw" style="background:${CATEGORIES.reaction.color}"></span>${esc(r)}</button>`).join('')
+    ? ''
     : type.tags
         .map((d) => {
           if (d.team) return `<button class="tagbtn big" data-tag="${d.key}"><span class="sw" style="background:${goalColor(s, d.team)}"></span>Goal ${esc(s.teams[d.team])}</button>`;
@@ -812,15 +841,21 @@ function renderLive() {
       ${type.phases ? `<button class="btn block" id="phaseBtn" style="min-height:60px;font-size:17px"></button>` : ''}
       ${type.toggle ? `<button class="btn block togglebtn" id="toggleBtn" style="min-height:60px;font-size:17px;color:${type.toggle.color}"></button>` : ''}
     </div>`
-        : `<div class="section-title" style="margin-top:14px"><h3>Your reaction</h3></div>`
+        : ''
     }
-    <div class="tags">${tagButtons}</div>
-    <form class="freetag" id="freeForm"><input type="text" id="freeText" placeholder="${linked ? 'How do you feel? (free text)' : 'Something else… (free text)'}" maxlength="60" autocomplete="off"/><button class="btn" type="submit">Tag</button></form>
+    ${
+      linked
+        ? `<div class="section-title" style="margin-top:16px"><h3>Moments · automatic</h3></div>
+      <p class="small muted" style="margin:-4px 2px 10px">Goals, chances, cards and your heart-rate spikes are added for you. Just watch.</p>
+      <ol class="mlist" id="liveMoments"></ol>
+      <div class="live-foot one"><button class="btn danger" id="endBtn">End session</button></div>`
+        : `<div class="tags">${tagButtons}</div>
+    <form class="freetag" id="freeForm"><input type="text" id="freeText" placeholder="Something else… (free text)" maxlength="60" autocomplete="off"/><button class="btn" type="submit">Tag</button></form>
     <div class="live-foot">
       <button class="btn" id="undoBtn">Undo last</button>
       <button class="btn danger" id="endBtn">End session</button>
-    </div>
-    ${linked ? `<div class="section-title"><h3>Moments</h3></div><ol class="mlist" id="liveMoments"></ol>` : ''}
+    </div>`
+    }
     <p class="hint">Keep Pulse open and on screen. Android can cut Bluetooth when Chrome is in the background. The screen stays on during a session.</p>
     <p class="note-estimate" style="text-align:center">${STRESS_NOTE}</p>
   `;
@@ -836,7 +871,7 @@ function renderLive() {
     }),
   );
   $$('[data-react]').forEach((b) => b.addEventListener('click', () => addTag({ ...REACTION_DEF, label: b.dataset.react })));
-  $('#freeForm').addEventListener('submit', (e) => {
+  if ($('#freeForm')) $('#freeForm').addEventListener('submit', (e) => {
     e.preventDefault();
     const v = $('#freeText').value.trim();
     if (!v) return;
@@ -871,7 +906,7 @@ function renderLive() {
       refreshLive(true);
     });
   }
-  $('#undoBtn').addEventListener('click', () => {
+  if ($('#undoBtn')) $('#undoBtn').addEventListener('click', () => {
     const last = state.undo.pop();
     if (!last) {
       const lt = s.tags.filter((g) => !g.auto).sort((a, b) => b.t - a.t)[0];
@@ -958,11 +993,20 @@ function isLight(hex) {
 }
 
 let lastMomentsKey = '';
+/** Rebuild automatic moments + heart-rate reactions for a linked session. */
+function refreshAuto(s, now = Date.now()) {
+  if (!s.feed) return s;
+  applyFeed(s, now);
+  s.reactions = detectReactions(s, state.settings.restingHr);
+  applyFeed(s, now);
+  return s;
+}
+
 function refreshLive(withChart) {
   const s = state.live;
   if (!s || !$('#liveClock')) return;
   const now = Date.now();
-  if (s.feed) applyFeed(s, now);
+  if (s.feed) (withChart ? refreshAuto(s, now) : applyFeed(s, now));
   const c = liveClock(s, now);
   $('#liveClock').textContent = c.big;
   $('#liveClockSub').textContent = c.sub;
@@ -977,7 +1021,7 @@ function refreshLive(withChart) {
   const tb = $('#toggleBtn');
   if (tb) {
     const ob = openBand(s);
-    const t = SESSION_TYPES[s.type].toggle;
+    const t = typeOf(s.type).toggle;
     tb.classList.toggle('on', !!ob);
     tb.textContent = ob ? `■ ${t.label} · ${elapsedLabel(now - ob.start)} (tap to stop)` : `● ${t.button}`;
   }
@@ -1033,7 +1077,7 @@ function renderEnd() {
   const s = state.live;
   if (!s) return go('#/');
   if (!s.ended) return go('#/live');
-  const type = SESSION_TYPES[s.type];
+  const type = typeOf(s.type);
   const rest = state.settings.restingHr;
   const st = sessionStats(s, rest);
   const linked = !!s.event;
@@ -1149,12 +1193,14 @@ function finalize(s) {
   delete out.ended;
   out.restingHr = state.settings.restingHr;
   out.endTs = s.endTs || Date.now();
-  if (out.feed) applyFeed(out, out.endTs);
+  if (out.feed) refreshAuto(out, Date.now());
   recomputeGoals(out);
   return out;
 }
 
 /* ---------------- Session detail ---------------- */
+
+let detailRedraw = null; // set while a session page is open, so the AI result can refresh it
 
 async function renderSession(id) {
   let s = await db.getSession(id);
@@ -1162,34 +1208,28 @@ async function renderSession(id) {
     view.innerHTML = `<div class="topbar"><a class="iconbtn" href="#/history">${icon('back')}</a><h1>Not found</h1></div>`;
     return;
   }
-  const type = SESSION_TYPES[s.type];
+  const type = typeOf(s.type);
   const rest = state.settings.restingHr;
   const linked = !!s.event;
+  let heroUrl = null;
+  if (linked && s.feed) {
+    refreshAuto(s, Date.now());
+    db.saveSession(s).catch(() => {});
+  }
 
   const draw = () => {
     const st = sessionStats(s, rest);
-    const cats = legendCategories(s);
-    const head =
-      linked && s.event.source === 'espn'
-        ? `<div class="scoreboard compact">
-          <div class="sb-team ${s.event.mine === 'home' ? 'mine' : ''}">${img(s.event.home.logo, 'crest big')}<span>${esc(s.event.home.short)}</span></div>
-          <div class="sb-mid"><div class="sb-score">${s.score ? `${s.score.home}–${s.score.away}` : '–'}</div><div class="sb-comp">${esc(s.event.competition)}</div></div>
-          <div class="sb-team ${s.event.mine === 'away' ? 'mine' : ''}">${img(s.event.away.logo, 'crest big')}<span>${esc(s.event.away.short)}</span></div></div>`
-        : '';
+    const hasAi = !!(s.ai && s.ai.at);
     view.innerHTML = `
     <div class="topbar"><a class="iconbtn" href="#/history" aria-label="Back">${icon('back')}</a>
-      <div class="grow"><div class="small muted">${esc(type.label)} · ${s.mode === 'doing' ? 'Doing' : 'Watching'}${s.demo ? ' · Demo' : ''}</div>
+      <div class="grow"><div class="small muted">${esc(type.label)} · ${fmtDate(s.startTs)}${s.demo ? ' · Demo' : ''}</div>
       <h1 style="font-size:26px">${esc(displayTitle(s))}</h1></div></div>
-    ${head}
-    <div class="chart-card">
-      <div class="cc-head"><div class="cc-title">${esc(chartHeading(s))}</div>
-      <div class="cc-key"><span><i style="background:${COLORS.hr}"></i>HEART RATE</span><span><i style="background:${COLORS.stressLow}"></i>STRESS</span></div></div>
-      <div class="chartbox" id="dChart"></div>
+    <a class="hero" id="dHero" target="_blank" rel="noopener" aria-label="Open the chart full size"><span class="spinner"></span>Drawing your chart…</a>
+    <div class="detail-actions">
+      <button class="btn primary" id="dShare">${icon('share')} Share</button>
+      <button class="btn" id="wRegen">${icon('spark')} ${hasAi ? 'Re-analyse' : 'Analyse with AI'}</button>
     </div>
-    <div class="story">${esc(storyLine(s))}</div>
-    <div class="catkey">${cats.map((c) => `<span><i style="background:${c.color}"></i>${esc(c.label)}</span>`).join('')}</div>
-    <ol class="mlist two">${momentsListHtml(s)}</ol>
-    <p class="note-estimate">${STRESS_NOTE}${linked ? ' Times marked ~ are estimated from live data plus your stream delay.' : ''}</p>
+    <div class="card ai-card"><h3 style="margin-bottom:10px">${icon('spark')} AI analysis</h3><div id="wBody" class="writeup"></div></div>
     ${
       linked
         ? `<div class="card tight delaycard"><div class="grow"><div class="small muted">Stream delay${s.calib && !s.calib.pending ? ' (synced)' : ''}</div><div class="num" style="font-size:22px;font-weight:700">${Math.round(
@@ -1200,31 +1240,36 @@ async function renderSession(id) {
         : ''
     }
     <div class="stats" style="margin:14px 0">
-      <div class="stat"><div class="v">${fmtDur(st.durationMs)}</div><div class="k">Duration</div></div>
+      <div class="stat"><div class="v">${fmtDur(st.durationMs)}</div><div class="k">Recorded</div></div>
       <div class="stat"><div class="v">${st.avgHr ?? '--'}<small>bpm</small></div><div class="k">Average HR</div></div>
       <div class="stat"><div class="v">${st.peakHr ?? '--'}<small>bpm</small></div><div class="k">Peak HR</div>${st.peakContext ? `<div class="ctx">${esc(st.peakContext)}</div>` : ''}</div>
       <div class="stat"><div class="v">${fmtDur(st.aboveCalmMs)}</div><div class="k">Above calm (&gt;${st.calmCeiling})</div></div>
     </div>
-    <div class="card"><h3 style="margin-bottom:10px">AI write-up</h3><div id="wBody" class="writeup"></div>
-      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn small" id="wRegen">Regenerate</button></div></div>
     <div class="card"><h3 style="margin-bottom:8px">My notes</h3>
       <textarea id="dNotes" placeholder="Add notes…">${esc(s.notes || '')}</textarea>
       <button class="btn small" id="dSaveNotes" style="margin-top:8px">Save notes</button></div>
-    <div style="display:grid;gap:8px">
-      <button class="btn primary block" id="dShare">${icon('share')} Share chart</button>
-      <button class="btn danger block" id="dDelete">Delete session</button>
-    </div>
+    <p class="note-estimate">${STRESS_NOTE}${linked ? ' Times marked ~ are estimated from live data plus your stream delay.' : ''}</p>
+    <button class="btn danger block" id="dDelete">Delete session</button>
   `;
-    drawDetail();
+    drawHero();
     bind();
   };
 
-  const drawDetail = () => {
-    const box = $('#dChart');
-    if (!box) return;
-    const w = Math.floor(box.clientWidth);
-    if (!w) return;
-    box.innerHTML = chartSvg(s, w, w < 500 ? 300 : 420, { restingHr: rest });
+  let heroJob = 0;
+  const drawHero = async () => {
+    const job = ++heroJob;
+    try {
+      const blob = await renderShareImage(s, rest, 'classic');
+      if (job !== heroJob || !$('#dHero')) return;
+      if (heroUrl) URL.revokeObjectURL(heroUrl);
+      heroUrl = URL.createObjectURL(blob);
+      const hero = $('#dHero');
+      hero.href = heroUrl;
+      hero.innerHTML = `<img src="${heroUrl}" alt="${esc(storyLine(s))}">`;
+    } catch (e) {
+      const hero = $('#dHero');
+      if (hero) hero.innerHTML = `<span class="error small">Couldn't draw the chart: ${esc(e.message)}</span>`;
+    }
   };
 
   const bind = () => {
@@ -1242,7 +1287,7 @@ async function renderSession(id) {
         s.delayMs = Math.max(0, Math.min(MAX_DELAY_MS, (s.delayMs ?? 0) + Number(b.dataset.delay) * 1000));
         s.delayCalibrated = true;
         s.calib = null;
-        applyFeed(s, s.endTs);
+        refreshAuto(s, Date.now());
         await db.saveSession(s);
         draw();
       }),
@@ -1254,9 +1299,9 @@ async function renderSession(id) {
         sync.innerHTML = '<span class="spinner"></span>Updating';
         try {
           s.feed = await syncEvent(s.event, state.follow);
-          applyFeed(s, s.endTs);
+          refreshAuto(s, Date.now());
           await db.saveSession(s);
-          toast(`${s.tags.filter((g) => g.auto).length} moments from live data`);
+          toast(`${s.tags.filter((g) => g.auto && g.cat !== 'reaction').length} moments from live data`);
           draw();
         } catch (e) {
           toast(`Couldn't update: ${e.message}`);
@@ -1273,19 +1318,25 @@ async function renderSession(id) {
   };
 
   draw();
-  const ro = new ResizeObserver(drawDetail);
-  ro.observe(view);
-  cleanup = () => ro.disconnect();
+  detailRedraw = (fresh) => {
+    if (location.hash !== `#/session/${id}`) return;
+    s = fresh;
+    draw();
+  };
+  cleanup = () => {
+    detailRedraw = null;
+    if (heroUrl) URL.revokeObjectURL(heroUrl);
+  };
 
-  // F1 data is often published after the race: fill in automatically if we have nothing yet.
-  if (linked && s.event.id !== 'demo' && !s.tags.some((g) => g.auto) && Date.now() - (s.endTs || 0) < 3 * 24 * 3600 * 1000) {
+  // Fill in or refresh moments from live data (F1 timing is often published after the race;
+  // a session saved before full time picks up the rest of the match).
+  const stale = linked && s.event.id !== 'demo' && (!s.feed || !s.feed.status || !s.feed.status.completed) && Date.now() - (s.endTs || 0) < 3 * 24 * 3600 * 1000;
+  if (stale) {
     try {
       s.feed = await syncEvent(s.event, state.follow);
-      applyFeed(s, s.endTs);
-      if (s.tags.some((g) => g.auto)) {
-        await db.saveSession(s);
-        if (location.hash === `#/session/${id}`) draw();
-      }
+      refreshAuto(s, Date.now());
+      await db.saveSession(s);
+      if (detailRedraw) detailRedraw(s);
     } catch {
       /* try again next time */
     }
@@ -1298,7 +1349,7 @@ function renderWriteupBody(s) {
   const regen = $('#wRegen');
   const plain = 'font-family:var(--txt);font-size:15px;font-weight:400';
   if (state.writeupBusy.has(s.id)) {
-    el.innerHTML = `<p class="muted" style="${plain}"><span class="spinner"></span>Writing your recap…</p>`;
+    el.innerHTML = `<p class="muted" style="${plain}"><span class="spinner"></span>Analysing the ${s.type === 'f1' ? 'race' : s.type === 'sport' ? 'match' : 'session'} and your heart rate…</p>`;
     if (regen) regen.disabled = true;
     return;
   }
@@ -1314,14 +1365,16 @@ function renderWriteupBody(s) {
       s.writeup.text
         .split(/\n\s*\n/)
         .map((p) => `<p>${esc(p.trim()).replace(/\n/g, '<br>')}</p>`)
-        .join('') + `<p class="small muted" style="${plain};font-size:12px">Written by ${esc(s.writeup.model)} · ${new Date(s.writeup.createdAt).toLocaleString()}</p>`;
-    if (regen) regen.textContent = 'Regenerate';
+        .join('') +
+      (s.ai && s.ai.caption ? `<div class="ai-caption"><div class="small muted">Suggested post</div><p>${esc(s.ai.caption)}</p></div>` : '') +
+      `<p class="small muted" style="${plain};font-size:12px">By ${esc(s.writeup.model)} · ${new Date(s.writeup.createdAt).toLocaleString()}</p>`;
     return;
   }
   el.innerHTML = `<p class="muted" style="${plain}">${
-    state.settings.apiKey ? 'No write-up yet.' : 'Add your Anthropic API key in Settings to get an AI write-up of this session.'
+    state.settings.apiKey
+      ? 'Tap <b>Analyse with AI</b>: Claude studies the match and your heart rate, writes the caption for every moment on the chart, explains your heart-rate spikes and drafts a post to share.'
+      : 'Add your Anthropic API key in Settings and Claude will analyse the match and your heart rate, caption every moment on the chart and draft a post to share.'
   }</p>`;
-  if (regen) regen.textContent = 'Generate write-up';
 }
 
 async function runWriteup(id, auto) {
@@ -1332,17 +1385,23 @@ async function runWriteup(id, auto) {
     renderWriteupBody(s);
     return;
   }
+  if (s.feed) refreshAuto(s, Date.now());
   state.writeupBusy.add(id);
   renderWriteupBody(s);
   try {
     const w = await generateWriteup(s, state.settings);
-    const fresh = await db.getSession(id);
-    fresh.writeup = w;
+    const fresh = (await db.getSession(id)) || s;
+    fresh.writeup = { text: w.text, model: w.model, createdAt: w.createdAt };
+    if (w.ai) {
+      fresh.ai = w.ai;
+      if (!fresh.shareCaption && w.ai.caption) fresh.shareCaption = '';
+    }
     delete fresh.writeupError;
     delete fresh.writeupErrorKind;
+    if (fresh.feed) refreshAuto(fresh, Date.now());
     await db.saveSession(fresh);
     state.writeupBusy.delete(id);
-    if (location.hash === `#/session/${id}`) renderWriteupBody(fresh);
+    if (detailRedraw) detailRedraw(fresh);
   } catch (e) {
     const fresh = (await db.getSession(id)) || s;
     state.writeupBusy.delete(id);
@@ -1371,7 +1430,7 @@ function shareSheet(s, rest) {
   if (!SHARE_FORMATS[format]) format = 'classic';
   const cache = {};
   let url = null;
-  const caption = s.shareCaption || buildCaption(s, rest);
+  const caption = s.shareCaption || (s.ai && s.ai.caption) || buildCaption(s, rest);
   const m = showModal(`
     <h2>Share</h2>
     <div class="fmt" id="shFmt" role="tablist">${Object.entries(SHARE_FORMATS)

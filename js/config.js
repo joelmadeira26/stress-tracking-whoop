@@ -25,6 +25,7 @@ export const COLORS = {
 export const CATEGORIES = {
   reaction: { label: 'Your reaction', color: '#d946ef' },
   key: { label: 'Key moment', color: '#e5e7eb' },
+  chance: { label: 'Big chance', color: '#22d3ee' },
   goalMine: { label: 'Goal (my team)', color: '#3fb950' },
   goalTheirs: { label: 'Goal (opponent)', color: '#f85149' },
   goalHome: { label: 'Goal (home)', color: '#58a6ff' },
@@ -53,8 +54,8 @@ export const REACTIONS = ['So nervous', 'Big chance!', 'Celebrating', 'Furious',
  */
 export const SESSION_TYPES = {
   sport: {
-    label: 'Watching sport',
-    short: 'Sport',
+    label: 'Football',
+    short: 'Football',
     icon: 'ball',
     defaultMode: 'watching',
     clock: 'match',
@@ -99,22 +100,6 @@ export const SESSION_TYPES = {
       { key: 'awkward', label: 'Awkward moment', color: '#f472b6' },
       { key: 'decision', label: 'Key decision', color: '#a78bfa' },
       { key: 'pitch', label: 'My pitch / ask', color: '#22d3ee' },
-    ],
-  },
-  workout: {
-    label: 'Workout',
-    short: 'Workout',
-    icon: 'bolt',
-    defaultMode: 'doing',
-    clock: 'elapsed',
-    titleHint: 'Leg day',
-    toggle: { key: 'set', button: 'Set / interval', label: 'Set', color: '#a78bfa' },
-    tags: [
-      { key: 'exercise', label: 'New exercise', color: '#22d3ee' },
-      { key: 'hard', label: 'Felt hard', color: '#f87171' },
-      { key: 'pb', label: 'Personal best', color: '#34d399' },
-      { key: 'rest', label: 'Rest', color: '#94a3b8' },
-      { key: 'cooldown', label: 'Cool-down', color: '#60a5fa' },
     ],
   },
 };
@@ -175,6 +160,7 @@ export const ICONS = {
   flag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 21V4M5 4h12l-2 4 2 4H5" stroke-linejoin="round"/><path d="M9 4v8M13 4v8" stroke-opacity=".5"/></svg>',
   star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z" stroke-linejoin="round"/></svg>',
   tv: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/></svg>',
+  spark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>',
   heart: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.5-4.6-9.5-9.4C1.2 8.2 3.4 4.5 7 4.5c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.6 0 5.8 3.7 4.5 7.1C19.5 16.4 12 21 12 21z"/></svg>',
   home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l9-7 9 7v9h-6v-6H9v6H3z" stroke-linejoin="round"/></svg>',
   list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" stroke-linecap="round"/></svg>',
@@ -182,3 +168,8 @@ export const ICONS = {
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 5l-7 7 7 7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 15V3M7 8l5-5 5 5M5 13v7h14v-7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
+
+/** Session type config, with a safe fallback for types that no longer exist (e.g. old Workout sessions). */
+export function typeOf(key) {
+  return SESSION_TYPES[key] || { label: 'Session', short: 'Other', icon: 'heart', defaultMode: 'doing', clock: 'elapsed', titleHint: '', tags: [] };
+}
