@@ -23,7 +23,7 @@ import {
 } from './analysis.js';
 import { chartSvg, sparklineSvg } from './chart.js';
 import { generateWriteup } from './ai.js';
-import { renderSessionPng, shareOrDownload, exportFileName, chartHeading, storyLine } from './export.js';
+import { renderShareImage, SHARE_FORMATS, buildCaption, shareOrDownload, downloadBlob, exportFileName, chartHeading, storyLine } from './export.js';
 import { DEMOS } from './demo.js';
 import { loadFixtures, syncEvent, searchableTeams, currentDrivers } from './feeds.js';
 
@@ -1264,19 +1264,7 @@ async function renderSession(id) {
           sync.textContent = 'Update moments';
         }
       });
-    $('#dShare').addEventListener('click', async () => {
-      const btn = $('#dShare');
-      btn.disabled = true;
-      try {
-        const blob = await renderSessionPng(s, rest);
-        const res = await shareOrDownload(blob, exportFileName(s), displayTitle(s));
-        if (res === 'downloaded') toast('Image saved to Downloads');
-      } catch (e) {
-        toast('Could not create image: ' + e.message);
-      } finally {
-        btn.disabled = false;
-      }
-    });
+    $('#dShare').addEventListener('click', () => shareSheet(s, rest));
     armButton($('#dDelete'), 'Tap again to delete', async () => {
       await db.deleteSession(s.id);
       toast('Session deleted');
@@ -1369,6 +1357,110 @@ async function runWriteup(id, auto) {
       if (location.hash === `#/session/${id}`) renderWriteupBody(fresh);
     }
   }
+}
+
+/* ---------------- Share sheet (social formats + caption) ---------------- */
+
+function shareSheet(s, rest) {
+  let format = 'classic';
+  try {
+    format = localStorage.getItem('pulse.shareFormat') || 'classic';
+  } catch {
+    /* ignore */
+  }
+  if (!SHARE_FORMATS[format]) format = 'classic';
+  const cache = {};
+  let url = null;
+  const caption = s.shareCaption || buildCaption(s, rest);
+  const m = showModal(`
+    <h2>Share</h2>
+    <div class="fmt" id="shFmt" role="tablist">${Object.entries(SHARE_FORMATS)
+      .map(([k, f]) => `<button role="tab" data-f="${k}"><b>${esc(f.label)}</b><span>${esc(f.hint)}</span></button>`)
+      .join('')}</div>
+    <div class="preview" id="shPrev"><span class="spinner"></span></div>
+    <label class="field" style="margin:12px 0 0"><span>Caption</span>
+      <textarea id="shCap" rows="5">${esc(caption)}</textarea></label>
+    <p class="small muted" style="margin:6px 0 0">WhatsApp and X take the caption with the image. Instagram and LinkedIn don't, so Pulse copies it: just paste it in.</p>
+    <div class="actions">
+      <button class="btn primary" id="shGo" style="min-height:58px;font-size:17px" disabled>${icon('share')} Share image + caption</button>
+      <div class="row2"><button class="btn" id="shCopy">Copy caption</button><button class="btn" id="shSave">Save image</button></div>
+      <button class="btn ghost" id="shClose">Close</button>
+    </div>`);
+  m.querySelector('.sheet').classList.add('wide');
+  const setTabs = () => $$('#shFmt button', m).forEach((b) => b.classList.toggle('on', b.dataset.f === format));
+  const render = async () => {
+    setTabs();
+    $('#shGo', m).disabled = true;
+    const prev = $('#shPrev', m);
+    prev.innerHTML = '<span class="spinner"></span>';
+    prev.dataset.f = format;
+    const f = format;
+    try {
+      cache[f] = cache[f] || (await renderShareImage(s, rest, f));
+    } catch (e) {
+      prev.innerHTML = `<p class="error small">Couldn't create the image: ${esc(e.message)}</p>`;
+      return;
+    }
+    if (f !== format || !$('#shPrev')) return;
+    if (url) URL.revokeObjectURL(url);
+    url = URL.createObjectURL(cache[f]);
+    prev.innerHTML = `<img src="${url}" alt="Share preview: ${esc(SHARE_FORMATS[f].label)}">`;
+    $('#shGo', m).disabled = false;
+  };
+  const cap = () => $('#shCap', m).value.trim();
+  const fileName = () => exportFileName(s).replace(/\.png$/, format === 'classic' ? '.png' : `-${format}.png`);
+  const copyCaption = () => {
+    try {
+      if (navigator.clipboard) return navigator.clipboard.writeText(cap()).then(() => true, () => false);
+    } catch {
+      /* ignore */
+    }
+    return Promise.resolve(false);
+  };
+  const remember = async () => {
+    if (cap() === (s.shareCaption || '')) return;
+    s.shareCaption = cap();
+    const fresh = await db.getSession(s.id);
+    if (fresh) {
+      fresh.shareCaption = s.shareCaption;
+      await db.saveSession(fresh);
+    }
+  };
+  $('#shFmt', m).addEventListener('click', (e) => {
+    const b = e.target.closest('[data-f]');
+    if (!b || b.dataset.f === format) return;
+    format = b.dataset.f;
+    try {
+      localStorage.setItem('pulse.shareFormat', format);
+    } catch {
+      /* ignore */
+    }
+    render();
+  });
+  $('#shGo', m).addEventListener('click', async () => {
+    const blob = cache[format];
+    if (!blob) return;
+    const copied = copyCaption(); // inside the tap, before sharing
+    const res = await shareOrDownload(blob, fileName(), displayTitle(s), cap());
+    remember();
+    if (res === 'downloaded') toast((await copied) ? 'Image saved, caption copied' : 'Image saved to Downloads');
+    else if (res === 'shared') toast((await copied) ? 'Shared. Caption is also copied' : 'Shared');
+  });
+  $('#shCopy', m).addEventListener('click', async () => {
+    toast((await copyCaption()) ? 'Caption copied' : 'Select the caption and copy it');
+    remember();
+  });
+  $('#shSave', m).addEventListener('click', () => {
+    if (!cache[format]) return;
+    downloadBlob(cache[format], fileName());
+    toast('Image saved to Downloads');
+  });
+  $('#shClose', m).addEventListener('click', () => {
+    remember();
+    if (url) URL.revokeObjectURL(url);
+    hideModal();
+  });
+  render();
 }
 
 /* ---------------- History ---------------- */

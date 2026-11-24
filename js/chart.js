@@ -278,7 +278,7 @@ export function drawChart(painter, session, x0, y0, W, H, opts = {}) {
   const span = end - start;
 
   const moments = numberedMoments(session);
-  const radius = (compact ? 7 : 8) * k;
+  const radius = (compact ? 6.5 : 7.5) * k;
   const rowH = radius * 2 + 4 * k;
 
   const xLeftPad = (compact ? 30 : 44) * k;
@@ -298,7 +298,9 @@ export function drawChart(painter, session, x0, y0, W, H, opts = {}) {
 
   // Data
   const hr10 = bucketHr(session.samples, start, end, 10 * 1000);
-  const ten = smooth(tensionSeries(session, rest).series.filter((p) => p.t <= end + 1), 2);
+  // Stress: smoothed over ~4 min and drawn every 2 min (like the reference: calm, readable swings).
+  const tenRaw = smooth(tensionSeries(session, rest).series.filter((p) => p.t <= end + 1), 4);
+  const ten = tenRaw.filter((p, i) => i % 4 === 0 || i === tenRaw.length - 1 || p.value == null || (tenRaw[i + 1] && tenRaw[i + 1].value == null) || (tenRaw[i - 1] && tenRaw[i - 1].value == null));
   const vals = hr10.filter((b) => b.avg != null).map((b) => b.avg);
   let lo = vals.length ? Math.min(...vals) : rest;
   let hi = vals.length ? Math.max(...vals) : rest + 40;
@@ -357,7 +359,7 @@ export function drawChart(painter, session, x0, y0, W, H, opts = {}) {
   const endLabelW = endLabel.length * 6.2 * k + 8 * k;
   for (let t = Math.ceil(start / stepMs) * stepMs; t <= end; t += stepMs) {
     const x = xf(t);
-    if (x > endX - endLabelW - 18 * k) continue;
+    if (x > endX - endLabelW - 18 * k || x < plotX + 24 * k) continue;
     painter.text(x, plotY + plotH + 16 * k, timeTick(t), { size: 10.5 * k, anchor: 'middle', fill: COLORS.muted, weight: 500 });
   }
 
@@ -374,7 +376,7 @@ export function drawChart(painter, session, x0, y0, W, H, opts = {}) {
     if (r.length < 2) continue;
     const base = plotY + plotH;
     painter.path([['M', r[0][0], base], ...r.map((p) => ['L', p[0], p[1]]), ['L', r[r.length - 1][0], base], ['Z']], { fill: COLORS.hr, fillOpacity: 0.08 });
-    painter.path(r.map((p, i) => [i ? 'L' : 'M', p[0], p[1]]), { stroke: COLORS.hr, width: 1.3 * k });
+    painter.path(r.map((p, i) => [i ? 'L' : 'M', p[0], p[1]]), { stroke: COLORS.hr, width: 1.15 * k });
   }
 
   // Stress line: smooth, green when calm → yellow when high
@@ -383,7 +385,7 @@ export function drawChart(painter, session, x0, y0, W, H, opts = {}) {
     [1, COLORS.stressHigh],
   ]);
   for (const r of runs(ten, xf, yTen, 'value')) {
-    painter.path(monotonePath(r), { stroke: grad, width: 2.6 * k });
+    painter.path(monotonePath(r), { stroke: grad, width: 2.4 * k });
   }
 
   // Moment markers

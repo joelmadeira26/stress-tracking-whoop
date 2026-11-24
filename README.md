@@ -24,7 +24,12 @@ Pulse records your live heart rate from a WHOOP strap (via **Heart Rate Broadcas
 - **Chart**: 10-second heart-rate averages (blue, left axis) and stress (green→yellow, 0–3, right axis). Numbered tag circles, staggered into up to 3 rows. Shaded bands (half-time, speaking, sets), kick-off and full-time lines, and gaps marked where the strap dropped out. Rendered as SVG at real pixel size, and redrawn when the screen resizes.
 - **End screen**: notes, forgotten moments (minute + label), and quick stats (duration, average and peak HR with what was happening at the peak, time above calm).
 - **AI write-up**: Anthropic Messages API called straight from the browser. Your key is stored only on your device.
-- **Share**: 1440 px PNG (2x) with title, date and time range, chart, numbered legend and the Pulse mark, sent through the Web Share API (WhatsApp, Instagram, LinkedIn…), with a download fallback.
+- **Share to social**: a share sheet with three formats, each with the chart and the numbered captions list:
+  - **Classic** (1520 px wide, the reference layout) for X, WhatsApp and LinkedIn
+  - **Post 4:5** (1080×1350) for the Instagram and LinkedIn feeds
+  - **Story 9:16** (1080×1920, with peak, average and stress-peak chips) for Instagram and WhatsApp status
+
+  It comes with a ready-written, editable caption ("I tracked my heart rate and stress during…" plus hashtags). It's shared with the image and copied for apps that ignore shared text. There's also a Save image fallback.
 - **History**: filter by type, sparklines, and an average-peak comparison across types.
 - **Reliability**: Screen Wake Lock, auto-reconnect with increasing waits, autosave every 5 s with "Resume your session?", and IndexedDB storage.
 - **PWA**: installable and works offline (service worker: network-first, cache fallback).

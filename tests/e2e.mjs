@@ -163,8 +163,25 @@ try {
   check('heading in caps', (await page.locator('.cc-title').innerText()).startsWith('HEART RATE & STRESS'));
   check('no horizontal overflow on phone', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
   await page.screenshot({ path: 'tests/screens/03-f1-detail-phone.png', fullPage: true });
-  const [dlf1] = await Promise.all([page.waitForEvent('download'), page.click('#dShare')]);
-  await dlf1.saveAs('tests/screens/04-export-f1.png');
+  await page.click('#dShare');
+  await page.waitForSelector('#shPrev img');
+  check('share sheet opens on Classic with a preview', (await page.locator('#shFmt button.on').innerText()).includes('Classic'));
+  check('caption pre-written', (await page.inputValue('#shCap')).startsWith('I tracked my heart rate and stress during the Las Vegas Grand Prix'));
+  await page.screenshot({ path: 'tests/screens/04a-share-sheet.png' });
+  const dims = { classic: [1520, null], post: [1080, 1350], story: [1080, 1920] };
+  for (const f of ['classic', 'post', 'story']) {
+    await page.click(`#shFmt [data-f="${f}"]`);
+    await page.waitForSelector(`#shPrev[data-f="${f}"] img`);
+    const [d] = await Promise.all([page.waitForEvent('download'), page.click('#shSave')]);
+    const fp = `tests/screens/04-export-f1-${f}.png`;
+    await d.saveAs(fp);
+    const b = fs.readFileSync(fp);
+    const [ew, eh] = dims[f];
+    const gw = b.readUInt32BE(16);
+    const gh = b.readUInt32BE(20);
+    check(`${f} image size ${gw}×${gh}`, gw === ew && (eh ? gh === eh : gh > 1000));
+  }
+  await page.click('#shClose');
 
   // Football demo detail + write-up + export
   await page.goto(BASE + '#/history');
@@ -180,22 +197,30 @@ try {
   const sent = JSON.parse(call.body.messages[0].content.split('\n\n').slice(1).join('\n\n'));
   check('API payload: resting HR, score, moments with source', sent.restingHr === 58 && sent.finalScore === '2-1' && sent.moments.some((m) => m.source === 'live data') && sent.moments.some((m) => m.source === 'you'));
   await page.screenshot({ path: 'tests/screens/05-football-detail-phone.png', fullPage: true });
-  const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#dShare')]);
-  const pngPath = 'tests/screens/06-export-football.png';
-  await dl.saveAs(pngPath);
-  const png = fs.readFileSync(pngPath);
-  const w = png.readUInt32BE(16);
-  const h = png.readUInt32BE(20);
-  check(`PNG export 2x (${w}x${h})`, w === 1520 && h > 1000);
+  await page.click('#dShare');
+  await page.click('#shFmt [data-f="classic"]');
+  await page.waitForSelector('#shPrev[data-f="classic"] img');
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#shSave')]);
+  await dl.saveAs('tests/screens/06-export-football.png');
+  for (const f of ['post', 'story']) {
+    await page.click(`#shFmt [data-f="${f}"]`);
+    await page.waitForSelector(`#shPrev[data-f="${f}"] img`);
+    const [d] = await Promise.all([page.waitForEvent('download'), page.click('#shSave')]);
+    await d.saveAs(`tests/screens/06-export-football-${f}.png`);
+  }
   await page.evaluate(() => {
     window.__shared = null;
     navigator.canShare = (d) => !!(d && d.files && d.files.length);
-    navigator.share = async (d) => { window.__shared = { n: d.files.length, type: d.files[0].type, name: d.files[0].name }; };
+    navigator.share = async (d) => { window.__shared = { n: d.files.length, type: d.files[0].type, name: d.files[0].name, text: d.text }; };
   });
-  await page.click('#dShare');
+  await page.fill('#shCap', 'Clássico nerves 😅 #SportingCP');
+  await page.click('#shGo');
   await page.waitForFunction(() => window.__shared);
   const shared = await page.evaluate(() => window.__shared);
-  check('Web Share API gets a PNG file', shared.n === 1 && shared.type === 'image/png' && shared.name.endsWith('.png'));
+  check('Web Share gets the PNG and the edited caption', shared.n === 1 && shared.type === 'image/png' && shared.name.endsWith('-story.png') && shared.text === 'Clássico nerves 😅 #SportingCP');
+  await page.click('#shClose');
+  await page.waitForTimeout(200);
+  check('edited caption saved with the session', (await page.evaluate(async () => (await window.__pulse.db.allSessions()).find((x) => x.type === 'sport').shareCaption)) === 'Clássico nerves 😅 #SportingCP');
 
   // Delay adjust on a saved session
   const tBefore = await page.evaluate(async () => (await window.__pulse.db.allSessions()).find((x) => x.type === 'sport').tags.find((g) => g.auto).t);

@@ -297,7 +297,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--hr); }
 .calib-l { font-weight: 600; font-size: 14px; }
 
 /* Chart card (reference look) */
-.chart-card { background: linear-gradient(150deg, #262b36 0%, #171a21 70%); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 14px; padding: 14px 10px 8px; margin-bottom: 14px; }
+.chart-card { background: radial-gradient(90% 70% at 0% 0%, rgba(120, 135, 210, 0.16), transparent 65%), linear-gradient(150deg, #272c38 0%, #191c24 60%, #14171d 100%); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 14px; padding: 14px 10px 8px; margin-bottom: 14px; }
 .chart-card.tight { padding: 10px 6px 4px; margin-bottom: 0; }
 .cc-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 14px; padding: 0 8px 6px; }
 .cc-title { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; color: var(--text); }
@@ -346,3 +346,13 @@ input:focus, select:focus, textarea:focus { border-color: var(--hr); }
 .syncin { display: flex; align-items: center; gap: 10px; margin: 14px 0 4px; }
 .syncin .pre { font-family: var(--num); font-size: 28px; font-weight: 700; color: var(--muted); }
 .syncin input { font-family: var(--num); font-size: 40px; font-weight: 700; text-align: center; min-height: 72px; letter-spacing: 0.04em; }
+
+/* Share sheet */
+#modal .sheet.wide { max-width: 560px; max-height: calc(100vh - 32px); overflow-y: auto; }
+.fmt { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 12px; }
+.fmt button { min-height: 58px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg2); color: var(--muted); cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 6px 4px; text-align: center; }
+.fmt button b { color: var(--text); font-size: 14px; }
+.fmt button span { font-size: 10.5px; line-height: 1.25; }
+.fmt button.on { border-color: var(--text); background: var(--panel2); }
+.preview { margin-top: 12px; border-radius: 12px; background: #07090d; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; min-height: 220px; max-height: 52vh; overflow: hidden; padding: 8px; }
+.preview img { display: block; max-width: 100%; max-height: calc(52vh - 16px); object-fit: contain; border-radius: 6px; }
