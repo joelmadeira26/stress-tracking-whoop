@@ -203,8 +203,8 @@ test('buildRequest has required headers and data', () => {
   assert.equal(req.body.temperature, undefined);
   const data = JSON.parse(req.body.messages[0].content.split('\n\n').slice(1).join('\n\n'));
   assert.equal(data.sessionType, 'Meeting');
-  assert.ok(data.series30s.length > 80);
-  assert.ok(data.series30s.some((p) => p.stress != null));
+  assert.ok(data.series30s.rows.length > 80 && data.series30s.columns.join() === 'time,hrAvg,hrMax,stress');
+  assert.ok(data.series30s.rows.some((r) => r[3] != null));
   assert.ok(data.moments.length === 5);
   assert.ok(data.bands.length === 5);
   assert.ok(data.myNotes.length > 10);

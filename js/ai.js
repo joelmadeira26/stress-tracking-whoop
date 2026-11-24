@@ -31,7 +31,7 @@ Return JSON with:
     "77': Deniz Gül heads Galatasaray in from a corner; your heart rate jumps to 118"
     "10:02 Budget review starts with Marco and Priya; your heart rate climbs 14 bpm above your baseline"
     "Tough question on the numbers; your heart rate hits 96"
-  Keep the minute ("77'") or lap ("Lap 19:") at the start when the original label has one. Say what happened using only facts in the input (label, detail, context lines). Where the heart-rate series clearly reacts around that time, add a short body note ("your heart rate jumps to 118", "stress peaks"). For moments with source "your body", explain what was going on at that time from the context and describe the body's reaction. Never invent players, scores, events or numbers.
+  Keep the minute ("77'") or lap ("Lap 19:") at the start when the original label has one. Say what happened using only facts in the input (label, detail, context lines). Where the heart-rate series (series30s rows: time, avg, max, stress) clearly reacts around that time, add a short body note ("your heart rate jumps to 118", "stress peaks"). For moments with source "your body", explain what was going on at that time from the context and describe the body's reaction. Never invent players, scores, events or numbers.
 - "headline": one punchy line about the session.
 - "writeup": 120 to 200 words in second person ("you"), plain sentences, paragraphs separated by a blank line: where heart rate and stress peaked and why; when you were calmest; how fast you recovered after the big moments; which moments hit hardest (your team or driver vs the opponent); end with one practical takeaway starting "Takeaway:".
 - "caption": a social media post in first person ("I tracked my heart rate and stress during ..."), at most 260 characters, mentioning the peak heart rate and the moment that caused it, then 3 to 6 relevant hashtags at the end (include #WHOOP). At most two emoji. No @mentions.
@@ -72,12 +72,18 @@ export function buildSessionData(session, restingHr) {
   const ten = tensionSeries(session, restingHr).series;
   const tenAt = new Map(ten.map((p) => [Math.round((p.t - start) / 30000), p.value]));
 
-  const series = hr30.map((b, i) => ({
-    time: type.clock === 'match' ? momentTimeLabel(session, b.t) + ' ' + clockTime(b.t) : clockTime(b.t),
-    hrAvg: b.avg == null ? null : Math.round(b.avg),
-    hrMax: b.max,
-    stress: round1(tenAt.get(i + 1)),
-  }));
+  // Compact table (rows of [time, avg, max, stress]); skips empty buckets. Keeps each analysis cheap.
+  const series = {
+    columns: ['time', 'hrAvg', 'hrMax', 'stress'],
+    rows: hr30
+      .map((b, i) => [
+        type.clock === 'match' ? `${momentTimeLabel(session, b.t)} ${clockTime(b.t)}` : clockTime(b.t),
+        b.avg == null ? null : Math.round(b.avg),
+        b.max,
+        round1(tenAt.get(i + 1)),
+      ])
+      .filter((r) => r[1] != null),
+  };
 
   const data = {
     sessionType: type.label,

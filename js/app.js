@@ -2537,7 +2537,7 @@ function renderSettings() {
       `<div class="set-row"><div class="lbl"><b>Fingerprint / face unlock</b><span>${st.lockBioId ? 'Registered on this phone' : 'Unlock meetings without typing the PIN'}</span></div><button class="btn small" id="sBio" type="button" ${st.lockOn ? '' : 'disabled'}>${st.lockBioId ? 'Re-register' : 'Set up'}</button></div>`,
     ])}
     ${group('spark', 'AI analysis', [
-      txt('apiKey', 'Anthropic API key', 'Stored only on this phone, sent only to api.anthropic.com. About one US cent per analysis.', 'sk-ant-…', true),
+      txt('apiKey', 'Anthropic API key', 'Stored only on this phone, sent only to api.anthropic.com. Each analysis costs about 3–5¢ with Sonnet or 0.2¢ with Haiku.', 'sk-ant-…', true),
       sel('model', 'AI model', [...AI_MODELS.map((m) => [m.id, m.label]), ...(AI_MODELS.some((m) => m.id === st.model) ? [] : [[st.model, st.model]])], 'The only thing Pulse costs. Charged to your Anthropic account.'),
       sel('aiEffort', 'Analysis depth', [['low', 'Quick (cheapest)'], ['medium', 'Thorough (costs a bit more)']]),
       tog('featAutoAnalyse', 'Analyse automatically', 'Run the AI analysis when you save a session'),

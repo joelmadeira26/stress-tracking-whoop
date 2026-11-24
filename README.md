@@ -69,7 +69,7 @@ Notes:
 | Google Calendar API | your meetings | free |
 | Cloudflare Worker (WHOOP relay) | WHOOP recovery, sleep, HRV | free plan |
 | GitHub Pages | hosting the app | free |
-| **Anthropic API** | AI analysis and captions | **paid per use**: Haiku 5.5 ≈ 0.1–0.2¢, Sonnet 5.5 ≈ 1–2¢, Opus 5.5 ≈ 2–4¢ per analysis |
+| **Anthropic API** | AI analysis and captions | **paid per use**: Haiku 5.5 ≈ 0.2¢, Sonnet 5.5 ≈ 3–5¢, Opus 5.5 ≈ 6–9¢ per analysis (a long work day costs a little more) |
 
 To keep AI costs down, pick **Haiku 5.5** and **Quick** depth in Settings, or turn off **Analyse automatically** and only analyse the sessions you want to share.
 
