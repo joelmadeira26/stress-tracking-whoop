@@ -485,3 +485,34 @@ test('applyFeed uses AI captions when present', () => {
   applyFeed(s, Date.now());
   assert.ok(s.tags.some((g) => g.label === 'Lap 2: Russell passes Max; Max retakes it around the outside' && g.baseLabel));
 });
+
+/* ---------- Meeting stress ---------- */
+import { meetingStress, peopleEffects } from '../js/analysis.js';
+import { demoMeetingWeek } from '../js/demo.js';
+
+test('meeting stress: elevation above the measured pre-meeting baseline', () => {
+  const t0 = 1_000_000;
+  const samples = [];
+  for (let i = 0; i < 180; i++) samples.push({ t: t0 + i * 1000, hr: 70 });
+  for (let i = 180; i < 180 + 1800; i++) samples.push({ t: t0 + i * 1000, hr: 81 });
+  const s = { type: 'meeting', startTs: t0, endTs: t0 + 1980 * 1000, samples, phases: { meetingStart: t0 + 180 * 1000 } };
+  const m = meetingStress(s, 60);
+  assert.equal(m.baselineSource, 'measured');
+  assert.equal(m.baseline, 70);
+  assert.equal(m.elevation, 11);
+  assert.equal(m.durationMin, 30);
+  const noPre = meetingStress({ ...s, phases: {} }, 60, 72);
+  assert.equal(noPre.baselineSource, 'usual');
+  const manual = meetingStress({ type: 'meeting', manual: { avgHr: 95, baselineHr: 70, durationMin: 40 } }, 60);
+  assert.equal(manual.elevation, 25);
+});
+
+test('people effects separate who drives the elevation (ridge regression)', () => {
+  const ms = demoMeetingWeek(60);
+  const rows = ms.map((m) => ({ attendees: m.attendees, elevation: meetingStress(m, 60).elevation }));
+  const eff = peopleEffects(rows);
+  assert.equal(eff[0].name, 'Marco');
+  assert.equal(eff.at(-1).name, 'Sam');
+  assert.ok(eff[0].effect > 2 && eff.at(-1).effect < 0);
+  assert.deepEqual(peopleEffects([]), []);
+});

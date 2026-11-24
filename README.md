@@ -18,9 +18,20 @@ Pulse records your live heart rate from a WHOOP strap (via **Heart Rate Broadcas
 - **Your reactions** (So nervous, Big chance!, Celebrating, Furious, Can't watch, or free text) are tagged with the match minute.
 - Sources: ESPN's public site API and OpenF1 (unofficial, not associated with Formula 1). Both are called straight from your phone; no server.
 
+## Meeting stress (a stress graph for every meeting)
+Inspired by the WHOOP "stress leaderboard" project: see which meetings, and which people, raise your heart rate.
+- **Record a meeting:** add who's there, start 2–3 minutes early, then tap **Meeting starts now**. The minutes before become your baseline, and Pulse reports how many bpm above it you were (e.g. +11.3).
+- **Add manually:** for meetings you didn't record, enter the average (and peak) heart rate from the WHOOP app's graph for that time, plus who was there.
+- **Stress graph:** every meeting ranked by bpm above baseline.
+- **Who raises your heart rate:** each person's estimated extra bpm. It uses ridge regression over who attended, so people who often share meetings are separated, and people with few meetings are pulled towards 0. **Hide names** turns everyone into Person A, B… (also inside meeting titles) before you share.
+- **Share stress board:** a 1520 px image of both rankings.
+- Caveat shown in the app: a higher heart rate is not proof someone causes stress; topic, deadlines, sleep, caffeine or presenting all play a part.
+
+![Meeting stress board](docs/example-meetings.png)
+
 ## Features
 - **Live**: big BPM, session clock (football match minute: 1'–45', 45+x', HT, 46'–90', 90+x', FT), live chart, thumb-sized tag buttons, free-text tags, Undo, and End (tap twice to confirm).
-- **Session types**: *Watching sport* (phase button, goals per team with a running score, big chance, penalty, red card, VAR), *Meeting* ("I'm speaking" band), *Workout* ("Set / interval" band).
+- **Session types**: *Football* and *F1* with automatic moments from live data, *Other match* (tag moments yourself), and *Meeting* (attendees, baseline, "I'm speaking" band).
 - **Chart**: 10-second heart-rate averages (blue, left axis) and stress (green→yellow, 0–3, right axis). Numbered tag circles, staggered into up to 3 rows. Shaded bands (half-time, speaking, sets), kick-off and full-time lines, and gaps marked where the strap dropped out. Rendered as SVG at real pixel size, and redrawn when the screen resizes.
 - **End screen**: notes, forgotten moments (minute + label), and quick stats (duration, average and peak HR with what was happening at the peak, time above calm).
 - **AI write-up**: Anthropic Messages API called straight from the browser. Your key is stored only on your device.

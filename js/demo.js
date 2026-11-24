@@ -313,3 +313,33 @@ export function demoWorkout(rest = 60) {
 }
 
 export const DEMOS = { sport: demoSport, f1: demoF1, meeting: demoMeeting };
+
+/* ---------------- Meeting stress board: a fortnight of meetings ---------------- */
+export function demoMeetingWeek(rest = 60) {
+  const effects = { Marco: 9, Priya: 4, Alex: 2, Sam: -1, Lea: 0, Jordan: 1 };
+  const plan = [
+    ['Weekly sync', ['Lea', 'Sam', 'Alex'], 9, 10, 30],
+    ['Budget review', ['Marco', 'Priya'], 9, 14, 45],
+    ['1:1 with Sam', ['Sam'], 8, 11, 25],
+    ['Roadmap planning', ['Marco', 'Alex', 'Jordan'], 7, 15, 50],
+    ['Client call', ['Priya', 'Jordan'], 6, 10, 35],
+    ['Design review', ['Lea', 'Alex'], 5, 16, 40],
+    ['Quarterly numbers', ['Marco', 'Priya', 'Lea'], 4, 9, 55],
+    ['1:1 with Priya', ['Priya'], 3, 12, 25],
+    ['Hiring debrief', ['Jordan', 'Sam'], 2, 17, 30],
+    ['Exec update', ['Marco'], 1, 10, 30],
+  ];
+  return plan.map(([title, attendees, days, hour, mins], i) => {
+    const start = daysAgoAt(days, hour, 0) - 3 * 60 * SEC;
+    const PRE = 3 * 60;
+    const DUR = PRE + mins * 60;
+    const bump = 3 + attendees.reduce((a, n) => a + effects[n], 0);
+    const spike = PRE + Math.round(mins * 60 * (0.3 + 0.4 * ((i * 37) % 10) / 10));
+    const hrAt = (s) => 70 + (s > PRE ? Math.min(1, (s - PRE) / 120) * bump : 0) + impulse(s - spike, bump * 0.6, 120);
+    const sess = baseSession('meeting', title, start, { restingHr: rest, attendees });
+    sess.samples = generate(start, DUR, hrAt, { seed: 100 + i, rest });
+    sess.phases = { meetingStart: start + PRE * SEC };
+    sess.endTs = start + DUR * SEC;
+    return sess;
+  });
+}

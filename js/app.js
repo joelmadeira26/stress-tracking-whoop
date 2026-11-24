@@ -18,14 +18,17 @@ import {
   sessionEnd,
   applyFeed,
   detectReactions,
+  meetingStress,
+  deskBaseline,
+  peopleEffects,
   legendCategories,
   parseMatchClock,
   MAX_DELAY_MS,
 } from './analysis.js';
 import { chartSvg, sparklineSvg } from './chart.js';
 import { generateWriteup } from './ai.js';
-import { renderShareImage, SHARE_FORMATS, buildCaption, shareOrDownload, downloadBlob, exportFileName, chartHeading, storyLine } from './export.js';
-import { DEMOS } from './demo.js';
+import { renderMeetingBoard, renderShareImage, SHARE_FORMATS, buildCaption, shareOrDownload, downloadBlob, exportFileName, chartHeading, storyLine } from './export.js';
+import { DEMOS, demoMeetingWeek } from './demo.js';
 import { loadFixtures, syncEvent, searchableTeams, currentDrivers } from './feeds.js';
 
 /* ---------------- Helpers ---------------- */
@@ -182,6 +185,7 @@ const routes = [
   [/^#\/history$/, renderHistory, 'history'],
   [/^#\/following$/, renderFollowing, 'following'],
   [/^#\/settings$/, renderSettings, 'settings'],
+  [/^#\/meetings$/, renderMeetings, 'home'],
   [/^#\/start\/(\w+)$/, renderStart, 'home'],
   [/^#\/live$/, renderLive, null],
   [/^#\/end$/, renderEnd, null],
@@ -393,6 +397,7 @@ async function renderHome() {
       <button class="otherbtn" data-start="meeting">${icon('chat')}<span>Meeting</span></button>
       <button class="otherbtn" data-start="sport">${icon('ball')}<span>Other match</span></button>
     </div>
+    <a class="meetcard" href="#/meetings" id="meetCard">${icon('chat')}<div class="grow"><b>Meeting stress</b><span class="small muted" id="meetSummary">See which meetings raise your heart rate</span></div><span class="chev">›</span></a>
     <div class="section-title"><h3>Sports</h3><a href="#/following" class="small">Edit</a></div>
     <div id="fixtures">${fixturesHtml(state.fixtures)}</div>
     <div class="section-title"><h3>Recent sessions</h3>${sessions.length > 4 ? '<a href="#/history" class="small">See all</a>' : ''}</div>
@@ -401,6 +406,14 @@ async function renderHome() {
   bindStrapChip();
   renderStrapBits();
   $$('[data-start]').forEach((b) => b.addEventListener('click', () => go(`#/start/${b.dataset.start}`)));
+  {
+    const ms = sessions.filter((x) => x.type === 'meeting');
+    if (ms.length) {
+      const rows = meetingRows(ms);
+      const top = rows.filter((r) => r.elevation != null).sort((a, b) => b.elevation - a.elevation)[0];
+      $('#meetSummary').textContent = `${ms.length} meeting${ms.length > 1 ? 's' : ''}${top ? ` · highest +${top.elevation} bpm (${top.title})` : ''}`;
+    }
+  }
   const bindWatch = () => {
     const more = $('#fxMore');
     if (more)
@@ -537,7 +550,13 @@ function renderStart(typeKey) {
           <div class="seg" id="fMine"><button data-v="home">Home</button><button data-v="away">Away</button><button data-v="none">Neither</button></div></div>`
           : ''
       }
+      ${
+        type.attendees
+          ? `<div class="field" style="margin-top:14px"><span class="muted small" style="display:block;margin-bottom:6px;font-weight:500">Who's in the meeting?</span><div id="fPeople"></div></div>`
+          : ''
+      }
     </div>
+    ${type.attendees ? '<p class="small muted" style="margin:-4px 2px 12px">Start recording 2–3 minutes before the meeting and tap <b>Meeting starts now</b> when it begins. Those first minutes are your baseline.</p>' : ''}
     <button class="btn primary block" id="fGo" style="min-height:60px;font-size:17px">Start session</button>
     <p class="hint">Keep Pulse open and on screen during the session. Android can cut Bluetooth when Chrome is in the background.</p>
   `;
@@ -565,6 +584,8 @@ function renderStart(typeKey) {
     $('#fAway').addEventListener('input', autoTitle);
     $('#fTitle').addEventListener('input', (e) => (e.target.dataset.touched = '1'));
   }
+  let people = null;
+  if (type.attendees) knownPeople().then((known) => (people = peopleInput($('#fPeople'), [], known)));
   $('#fGo').addEventListener('click', async () => {
     const title = $('#fTitle').value.trim() || type.titleHint;
     const s = {
@@ -581,6 +602,10 @@ function renderStart(typeKey) {
       notes: '',
       writeup: null,
     };
+    if (type.attendees) {
+      s.attendees = people ? people.get() : [];
+      s.phases = {};
+    }
     if (type.teams) {
       s.teams = { home: $('#fHome').value.trim() || 'Home', away: $('#fAway').value.trim() || 'Away', mine: mine === 'none' ? null : mine };
       s.score = { home: 0, away: 0 };
@@ -1014,7 +1039,8 @@ function refreshLive(withChart) {
   const pb = $('#phaseBtn');
   if (pb) {
     const np = nextPhase(s);
-    pb.textContent = np ? `▶ ${np.button}` : 'Full time ✓';
+    const phs = typeOf(s.type).phases || [];
+    pb.textContent = np ? `▶ ${np.button}` : `✓ ${phs.length ? phs[phs.length - 1].label : 'Done'}`;
     pb.disabled = !np;
     pb.classList.toggle('primary', !!np && np.key === 'kickoff');
   }
@@ -1212,6 +1238,18 @@ async function renderSession(id) {
   const rest = state.settings.restingHr;
   const linked = !!s.event;
   let heroUrl = null;
+  if (s.manual) return renderManualMeeting(s);
+  const meetingHtml = async () => {
+    if (s.type !== 'meeting') return '';
+    const all = (await db.allSessions()).filter((x) => x.type === 'meeting');
+    const ms = meetingStress(s, rest, deskBaseline(all, rest));
+    return `<div class="card meetstat"><div class="grow"><div class="small muted">Above your baseline</div>
+      <div class="big ${ms.elevation >= 10 ? 'hot' : ms.elevation >= 5 ? 'warm' : 'cool'}">${ms.elevation == null ? '–' : `${ms.elevation > 0 ? '+' : ''}${ms.elevation}`}<small> bpm</small></div>
+      <div class="small muted">Baseline ${ms.baseline ?? '–'} bpm (${esc(baselineText(ms.baselineSource))}) · meeting average ${ms.avgHr ?? '–'} bpm</div></div>
+      <a class="btn small" href="#/meetings">Stress board</a></div>
+      <div class="card"><h3 style="margin-bottom:8px">Who was there</h3><div id="dPeople"></div>
+      <button class="btn small" id="dSavePeople" style="margin-top:8px">Save people</button></div>`;
+  };
   if (linked && s.feed) {
     refreshAuto(s, Date.now());
     db.saveSession(s).catch(() => {});
@@ -1229,6 +1267,7 @@ async function renderSession(id) {
       <button class="btn primary" id="dShare">${icon('share')} Share</button>
       <button class="btn" id="wRegen">${icon('spark')} ${hasAi ? 'Re-analyse' : 'Analyse with AI'}</button>
     </div>
+    <div id="dMeeting"></div>
     <div class="card ai-card"><h3 style="margin-bottom:10px">${icon('spark')} AI analysis</h3><div id="wBody" class="writeup"></div></div>
     ${
       linked
@@ -1253,6 +1292,19 @@ async function renderSession(id) {
   `;
     drawHero();
     bind();
+    meetingHtml().then((h) => {
+      const slot = $('#dMeeting');
+      if (!slot || !h) return;
+      slot.innerHTML = h;
+      knownPeople().then((known) => {
+        const pi = peopleInput($('#dPeople'), s.attendees || [], known);
+        $('#dSavePeople').addEventListener('click', async () => {
+          s.attendees = pi.get();
+          await db.saveSession(s);
+          toast('People saved');
+        });
+      });
+    });
   };
 
   let heroJob = 0;
@@ -1522,6 +1574,248 @@ function shareSheet(s, rest) {
   render();
 }
 
+/* ---------------- Meeting stress board ---------------- */
+
+const baselineText = (src) =>
+  src === 'measured' ? 'measured before it started' : src === 'usual' ? 'your usual desk baseline' : src === 'entered' ? 'entered' : 'estimated from resting HR';
+
+async function knownPeople() {
+  const all = await db.allSessions();
+  const count = new Map();
+  for (const x of all) for (const n of x.attendees || []) count.set(n, (count.get(n) || 0) + 1);
+  return [...count.entries()].sort((a, b) => b[1] - a[1]).map(([n]) => n);
+}
+
+/** Chip input for people. Returns { get() }. */
+function peopleInput(el, initial, known) {
+  let list = [...initial];
+  const id = 'pl' + Math.random().toString(36).slice(2, 7);
+  const draw = () => {
+    el.innerHTML = `<div class="peoplechips">${list
+      .map((n, i) => `<span class="pchip">${esc(n)}<button type="button" aria-label="Remove ${esc(n)}" data-i="${i}">×</button></span>`)
+      .join('')}<input type="text" list="${id}" placeholder="${list.length ? 'Add another…' : 'Type a name, press Enter'}" maxlength="40" autocomplete="off" enterkeyhint="done"/></div>
+      <datalist id="${id}">${known.filter((n) => !list.includes(n)).map((n) => `<option value="${esc(n)}">`).join('')}</datalist>`;
+    const input = $('input', el);
+    const addNow = () => {
+      const v = input.value.replace(/,/g, ' ').trim();
+      if (v && !list.some((x) => x.toLowerCase() === v.toLowerCase())) list.push(v);
+      draw();
+      $('input', el).focus();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ',') {
+        e.preventDefault();
+        addNow();
+      } else if (e.key === 'Backspace' && !input.value && list.length) {
+        list.pop();
+        draw();
+        $('input', el).focus();
+      }
+    });
+    input.addEventListener('change', () => {
+      if (known.includes(input.value.trim())) addNow();
+    });
+    $$('[data-i]', el).forEach((b) =>
+      b.addEventListener('click', () => {
+        list.splice(Number(b.dataset.i), 1);
+        draw();
+      }),
+    );
+  };
+  draw();
+  return {
+    get: () => {
+      const v = $('input', el) && $('input', el).value.trim();
+      if (v && !list.includes(v)) list.push(v);
+      return list;
+    },
+  };
+}
+
+function meetingRows(meetings) {
+  const rest = state.settings.restingHr;
+  const desk = deskBaseline(meetings, rest);
+  return meetings
+    .map((m) => ({ id: m.id, title: m.title, date: m.startTs, attendees: m.attendees || [], manual: !!m.manual, ...meetingStress(m, rest, desk) }))
+    .sort((a, b) => b.date - a.date);
+}
+
+const stressClass = (e) => (e == null ? '' : e >= 10 ? 'hot' : e >= 5 ? 'warm' : 'cool');
+
+async function renderMeetings() {
+  const all = (await db.allSessions()).filter((x) => x.type === 'meeting');
+  const rows = meetingRows(all);
+  const scored = rows.filter((r) => r.elevation != null);
+  const ranked = [...scored].sort((a, b) => b.elevation - a.elevation);
+  const people = peopleEffects(scored.map((r) => ({ elevation: r.elevation, attendees: r.attendees })));
+  const hide = !!state.hideNames;
+  const alias = new Map(people.map((p, i) => [p.name, `Person ${String.fromCharCode(65 + (i % 26))}`]));
+  const nm = (n) => (hide ? alias.get(n) || 'Someone' : n);
+  const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const mask = (t) => (hide ? people.reduce((acc, pp) => acc.replace(new RegExp(`(^|[^\\p{L}])${reEsc(pp.name)}(?![\\p{L}])`, 'giu'), `$1${alias.get(pp.name)}`), t) : t);
+  const maxAbs = Math.max(4, ...ranked.map((r) => Math.abs(r.elevation)));
+  const maxEff = Math.max(2, ...people.map((p) => Math.abs(p.effect)));
+  const avg = scored.length ? Math.round((scored.reduce((a, r) => a + r.elevation, 0) / scored.length) * 10) / 10 : null;
+
+  view.innerHTML = `
+    <div class="topbar"><a class="iconbtn" href="#/" aria-label="Back">${icon('back')}</a><h1 class="grow">Meeting stress</h1></div>
+    <div class="row2" style="margin-bottom:12px">
+      <a class="btn primary" href="#/start/meeting">${icon('chat')} Record a meeting</a>
+      <button class="btn" id="mAdd">+ Add manually</button>
+    </div>
+    ${
+      !rows.length
+        ? `<div class="empty">No meetings yet. Record one (start 2–3 minutes early for a baseline) or add one manually with the average heart rate from your WHOOP app.<br><br><button class="btn small" id="mDemo">Load 10 demo meetings</button></div>`
+        : `
+    <div class="stats" style="margin-bottom:14px">
+      <div class="stat"><div class="v">${rows.length}</div><div class="k">Meetings</div></div>
+      <div class="stat"><div class="v">${avg == null ? '–' : `${avg > 0 ? '+' : ''}${avg}`}<small>bpm</small></div><div class="k">Average above baseline</div></div>
+    </div>
+    <div class="chart-card mboard">
+      <div class="cc-head"><div class="cc-title">STRESS GRAPH · EVERY MEETING</div><div class="cc-key"><span>BPM ABOVE BASELINE</span></div></div>
+      <ol class="mbars">${ranked
+        .map(
+          (r) => `<li><a href="#/session/${r.id}">
+          <div class="mb-top"><span class="mb-title">${esc(mask(r.title))}</span><span class="mb-val ${stressClass(r.elevation)}">${r.elevation > 0 ? '+' : ''}${r.elevation}</span></div>
+          <div class="mb-bar"><i class="${stressClass(r.elevation)}" style="width:${Math.max(2, (Math.abs(r.elevation) / maxAbs) * 100)}%"></i></div>
+          <div class="mb-meta">${fmtDate(r.date)} · ${r.durationMin ?? '–'} min${r.attendees.length ? ` · ${esc(r.attendees.map(nm).join(', '))}` : ''}${r.manual ? ' · added manually' : ''}</div></a></li>`,
+        )
+        .join('')}</ol>
+    </div>
+    <div class="chart-card mboard">
+      <div class="cc-head"><div class="cc-title">WHO RAISES YOUR HEART RATE</div>
+        <label class="toggle mini"><span>Hide names</span><input type="checkbox" id="mHide" ${hide ? 'checked' : ''}/><i></i></label></div>
+      ${
+        people.length
+          ? `<ol class="mpeople">${people
+              .map(
+                (pp, i) => `<li><span class="rank">${i + 1}</span><span class="pname">${esc(nm(pp.name))}</span>
+              <span class="pbar"><i class="${pp.effect >= 0 ? 'up' : 'down'}" style="width:${(Math.abs(pp.effect) / maxEff) * 50}%"></i></span>
+              <span class="peff ${pp.effect >= 0 ? 'up' : 'down'}">${pp.effect > 0 ? '+' : ''}${pp.effect}</span><span class="pn">${pp.meetings} mtg${pp.meetings > 1 ? 's' : ''}</span></li>`,
+              )
+              .join('')}</ol>
+          <p class="small muted" style="margin:8px 8px 4px">Each person's estimated extra bpm when they're in the meeting, separated from who else was there (regression over all your meetings). People with fewer meetings are pulled towards 0.</p>`
+          : '<p class="small muted" style="margin:8px">Add who was in each meeting to see this.</p>'
+      }
+    </div>
+    <div class="banner warn small">A higher heart rate in a meeting is not proof that a person causes stress. Topic, time pressure, sleep, caffeine, exercise or having to present all play a part. Treat this as a personal signal to look into, not a verdict on anyone.</div>
+    <button class="btn block" id="mShare" style="margin-top:12px">${icon('share')} Share stress board${hide ? ' (names hidden)' : ''}</button>`
+    }
+  `;
+  $('#mAdd').addEventListener('click', () => manualMeetingSheet());
+  const demoBtn = $('#mDemo');
+  if (demoBtn)
+    demoBtn.addEventListener('click', async () => {
+      for (const m of demoMeetingWeek(state.settings.restingHr)) await db.saveSession(m);
+      renderMeetings();
+    });
+  const hideEl = $('#mHide');
+  if (hideEl)
+    hideEl.addEventListener('change', () => {
+      state.hideNames = hideEl.checked;
+      renderMeetings();
+    });
+  const share = $('#mShare');
+  if (share)
+    share.addEventListener('click', async () => {
+      share.disabled = true;
+      try {
+        const blob = await renderMeetingBoard(ranked.map((r) => ({ ...r, title: mask(r.title) })), people, { nameOf: nm });
+        const res = await shareOrDownload(blob, `pulse-meeting-stress-${new Date().toISOString().slice(0, 10)}.png`, 'My meeting stress board', 'My heart rate in every meeting, ranked. #WHOOP #Pulse');
+        if (res === 'downloaded') toast('Image saved to Downloads');
+      } catch (e) {
+        toast('Could not create image: ' + e.message);
+      } finally {
+        share.disabled = false;
+      }
+    });
+}
+
+async function manualMeetingSheet(existing = null) {
+  const known = await knownPeople();
+  const all = (await db.allSessions()).filter((x) => x.type === 'meeting');
+  const desk = deskBaseline(all, state.settings.restingHr);
+  const e = existing || {};
+  const m = e.manual || {};
+  const d = new Date(existing ? existing.startTs : Date.now() - 60 * 60000);
+  const pad = (n) => String(n).padStart(2, '0');
+  const dateVal = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const timeVal = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const sheet = showModal(`
+    <h2>${existing ? 'Edit meeting' : 'Add a meeting'}</h2>
+    <p class="small muted">For meetings you didn't record in Pulse. Open the WHOOP app's heart-rate graph for that time and copy the average (and peak) while the meeting ran.</p>
+    <label class="field"><span>Title</span><input type="text" id="mmTitle" maxlength="80" value="${esc(e.title || '')}" placeholder="Weekly sync"/></label>
+    <div class="row2"><label class="field"><span>Date</span><input type="date" id="mmDate" value="${dateVal}"/></label>
+      <label class="field"><span>Start</span><input type="time" id="mmTime" value="${timeVal}"/></label></div>
+    <div class="row2"><label class="field"><span>Duration (min)</span><input type="number" id="mmDur" min="5" max="480" inputmode="numeric" value="${esc(m.durationMin || 30)}"/></label>
+      <label class="field"><span>Average HR (bpm)</span><input type="number" id="mmAvg" min="40" max="200" inputmode="numeric" value="${esc(m.avgHr || '')}" placeholder="82"/></label></div>
+    <div class="row2"><label class="field"><span>Peak HR (optional)</span><input type="number" id="mmPeak" min="40" max="220" inputmode="numeric" value="${esc(m.peakHr || '')}"/></label>
+      <label class="field"><span>Your baseline (optional)</span><input type="number" id="mmBase" min="40" max="150" inputmode="numeric" value="${esc(m.baselineHr || '')}" placeholder="${Math.round(desk || state.settings.restingHr + 8)}"/></label></div>
+    <div class="field"><span class="muted small" style="display:block;margin-bottom:6px;font-weight:500">Who was there?</span><div id="mmPeople"></div></div>
+    <div class="actions">
+      <button class="btn primary" id="mmSave">Save meeting</button>
+      <button class="btn ghost" id="mmCancel">Cancel</button>
+    </div>`);
+  sheet.querySelector('.sheet').classList.add('wide');
+  const pi = peopleInput($('#mmPeople', sheet), e.attendees || [], known);
+  $('#mmCancel', sheet).addEventListener('click', hideModal);
+  $('#mmSave', sheet).addEventListener('click', async () => {
+    const title = $('#mmTitle', sheet).value.trim() || 'Meeting';
+    const start = new Date(`${$('#mmDate', sheet).value}T${$('#mmTime', sheet).value || '09:00'}`).getTime();
+    const dur = parseInt($('#mmDur', sheet).value, 10);
+    const avgHr = parseInt($('#mmAvg', sheet).value, 10);
+    const peakHr = parseInt($('#mmPeak', sheet).value, 10) || null;
+    const baselineHr = parseInt($('#mmBase', sheet).value, 10) || null;
+    if (!Number.isFinite(start)) return toast('Pick a date and time');
+    if (!(dur >= 5 && dur <= 480)) return toast('Duration should be 5–480 minutes');
+    if (!(avgHr >= 40 && avgHr <= 200)) return toast('Enter the average heart rate from WHOOP');
+    const sess = {
+      ...(existing || {}),
+      id: existing ? existing.id : uid(),
+      type: 'meeting',
+      title,
+      mode: 'doing',
+      startTs: start,
+      endTs: start + dur * 60000,
+      restingHr: state.settings.restingHr,
+      samples: [],
+      tags: [],
+      bands: [],
+      notes: existing ? existing.notes || '' : '',
+      attendees: pi.get(),
+      manual: { avgHr, peakHr, baselineHr, durationMin: dur },
+    };
+    await db.saveSession(sess);
+    hideModal();
+    toast(existing ? 'Meeting updated' : 'Meeting added');
+    if (location.hash === '#/meetings') renderMeetings();
+    else go('#/meetings');
+  });
+}
+
+async function renderManualMeeting(s) {
+  const rest = state.settings.restingHr;
+  const all = (await db.allSessions()).filter((x) => x.type === 'meeting');
+  const ms = meetingStress(s, rest, deskBaseline(all, rest));
+  view.innerHTML = `
+    <div class="topbar"><a class="iconbtn" href="#/meetings" aria-label="Back">${icon('back')}</a>
+      <div class="grow"><div class="small muted">Meeting · added manually · ${fmtDate(s.startTs)} ${clockTime(s.startTs)}</div><h1 style="font-size:26px">${esc(s.title)}</h1></div></div>
+    <div class="card meetstat"><div class="grow"><div class="small muted">Above your baseline</div>
+      <div class="big ${stressClass(ms.elevation)}">${ms.elevation > 0 ? '+' : ''}${ms.elevation}<small> bpm</small></div>
+      <div class="small muted">Average ${ms.avgHr} bpm${ms.peakHr ? ` · peak ${ms.peakHr}` : ''} · baseline ${ms.baseline} (${esc(baselineText(ms.baselineSource))}) · ${ms.durationMin} min</div></div></div>
+    <div class="card"><h3 style="margin-bottom:8px">Who was there</h3><p style="margin:0">${(s.attendees || []).map(esc).join(', ') || '<span class="muted">Nobody added</span>'}</p></div>
+    <div style="display:grid;gap:8px">
+      <button class="btn block" id="mmEdit">Edit meeting</button>
+      <button class="btn danger block" id="dDelete">Delete meeting</button>
+    </div>`;
+  $('#mmEdit').addEventListener('click', () => manualMeetingSheet(s));
+  armButton($('#dDelete'), 'Tap again to delete', async () => {
+    await db.deleteSession(s.id);
+    toast('Meeting deleted');
+    go('#/meetings');
+  });
+}
+
 /* ---------------- History ---------------- */
 
 async function renderHistory() {
@@ -1721,6 +2015,7 @@ function renderSettings() {
           .filter(([k]) => DEMOS[k])
           .map(([k, t]) => `<button class="btn block" data-demo="${k}">${icon(t.icon)} Load ${esc(t.label.toLowerCase())} demo</button>`)
           .join('')}
+        <button class="btn block" id="demoMeetings">${icon('chat')} Load meeting stress demo (10 meetings)</button>
       </div>
     </div>
 
@@ -1761,6 +2056,11 @@ function renderSettings() {
       go(`#/session/${s.id}`);
     }),
   );
+  $('#demoMeetings').addEventListener('click', async () => {
+    for (const m of demoMeetingWeek(state.settings.restingHr)) await db.saveSession(m);
+    toast('10 demo meetings loaded');
+    go('#/meetings');
+  });
   $('#sExport').addEventListener('click', async () => {
     const all = await db.allSessions();
     const settings = { ...state.settings, apiKey: state.settings.apiKey ? '(not exported)' : '' };

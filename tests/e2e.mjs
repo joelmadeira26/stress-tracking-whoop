@@ -355,25 +355,77 @@ try {
   check('live autosave cleared after save', !(await lp.evaluate(() => window.__pulse.db.getLive())));
   await lp.screenshot({ path: 'tests/screens/09-saved-linked.png', fullPage: true });
 
-  /* ---------- 4. Manual meeting with toggle ---------- */
+  /* ---------- 4. Meetings: record with attendees + baseline, stress board, manual add ---------- */
   await lp.goto(BASE + '#/start/meeting');
-  await lp.fill('#fTitle', 'Interview with Zinc');
+  await lp.fill('#fTitle', 'Budget review');
   check('meeting defaults to "doing"', (await lp.locator('#fMode button.on').innerText()) === 'Doing');
+  await lp.waitForSelector('#fPeople input');
+  for (const n of ['Marco', 'Priya']) {
+    await lp.fill('#fPeople input', n);
+    await lp.press('#fPeople input', 'Enter');
+  }
+  check('attendee chips added', (await lp.locator('#fPeople .pchip').count()) === 2);
   await lp.click('#fGo');
-  await lp.waitForSelector('#toggleBtn');
-  await lp.clock.runFor(3 * 60 * 1000);
+  await lp.waitForSelector('#phaseBtn');
+  check('"Meeting starts now" button', (await lp.locator('#phaseBtn').innerText()).includes('Meeting starts now'));
+  await lp.evaluate(() => (window.__fakeHR.hr = 70));
+  await lp.clock.runFor(3 * 60 * 1000); // baseline before the meeting
+  await lp.click('#phaseBtn');
+  check('phase done label', (await lp.locator('#phaseBtn').innerText()).includes('Meeting starts'));
+  await lp.evaluate(() => (window.__fakeHR.hr = 84));
+  await lp.clock.runFor(2 * 60 * 1000);
   await lp.click('#toggleBtn');
   await lp.clock.runFor(2 * 60 * 1000);
   check('speaking toggle on', (await lp.locator('#toggleBtn').getAttribute('class')).includes('on'));
   await lp.click('#toggleBtn');
   await lp.click('[data-tag="tough"]');
-  await lp.clock.runFor(10000);
-  check('speaking band drawn', (await lp.locator('#liveChart svg').innerHTML()).includes('SPEAKING'));
+  await lp.clock.runFor(10 * 60 * 1000);
+  const liveSvg = await lp.locator('#liveChart svg').innerHTML();
+  check('speaking + baseline bands drawn', liveSvg.includes('SPEAKING') && liveSvg.includes('BASELINE'));
   await lp.click('#endBtn');
   await lp.click('#endBtn');
-  await lp.click('#eDiscard');
-  await lp.click('#eDiscard');
-  await lp.waitForSelector('.otherbtn');
+  await lp.waitForSelector('#eSave');
+  await lp.click('#eSave');
+  await lp.waitForSelector('.meetstat .big');
+  const elev = parseFloat((await lp.locator('.meetstat .big').innerText()).replace('+', ''));
+  check(`recorded meeting: ≈ +14 bpm above measured baseline (${elev})`, elev > 11 && elev < 16 && (await lp.locator('.meetstat').innerText()).includes('measured before it started'));
+  check('attendees shown on the meeting', (await lp.locator('#dPeople .pchip').count()) === 2);
+  await lp.screenshot({ path: 'tests/screens/12-meeting-detail.png', fullPage: true });
+
+  await lp.goto(BASE + '#/settings');
+  await lp.click('#demoMeetings');
+  await lp.waitForSelector('.mbars li');
+  check('stress board ranks all meetings', (await lp.locator('.mbars li').count()) === 11);
+  const vals = await lp.$$eval('.mb-val', (els) => els.map((e) => parseFloat(e.textContent)));
+  check('ranked highest first', vals.every((v, i) => i === 0 || v <= vals[i - 1]));
+  check('people leaderboard: Marco raises it most', (await lp.locator('.mpeople li').first().innerText()).includes('Marco'));
+  await lp.screenshot({ path: 'tests/screens/13-meeting-board.png', fullPage: true });
+  await lp.click('#mHide + i');
+  await lp.waitForSelector('.mpeople li:has-text("Person A")');
+  check('hide names → Person A…', !(await lp.locator('.mpeople').innerText()).includes('Marco') && !(await lp.locator('.mbars').innerText()).includes('Marco') && !(await lp.locator('.mbars').innerText()).includes('Priya'));
+  const [bd] = await Promise.all([lp.waitForEvent('download'), lp.click('#mShare')]);
+  await bd.saveAs('tests/screens/14-meeting-board-share.png');
+  const bb = fs.readFileSync('tests/screens/14-meeting-board-share.png');
+  check(`board image 2x (${bb.readUInt32BE(16)} px)`, bb.readUInt32BE(16) === 1520);
+  await lp.click('#mHide + i');
+
+  await lp.click('#mAdd');
+  await lp.fill('#mmTitle', 'Investor call');
+  await lp.fill('#mmDur', '40');
+  await lp.fill('#mmAvg', '95');
+  await lp.fill('#mmBase', '70');
+  await lp.fill('#mmPeople input', 'Marco');
+  await lp.press('#mmPeople input', 'Enter');
+  await lp.click('#mmSave');
+  await lp.waitForSelector('.mbars li:has-text("Investor call")');
+  check('manual meeting added at the top (+25)', (await lp.locator('.mbars li').first().innerText()).includes('Investor call') && (await lp.locator('.mb-val').first().innerText()) === '+25');
+  await lp.click('.mbars li a:has-text("Investor call")');
+  await lp.waitForSelector('#mmEdit');
+  check('manual meeting page', (await lp.locator('.meetstat .big').innerText()).startsWith('+25'));
+  await lp.goto(BASE);
+  await lp.waitForSelector('#meetSummary');
+  await lp.waitForFunction(() => /meetings · highest \+25/.test(document.querySelector('#meetSummary').textContent));
+  check('home meeting-stress card summary', true);
 
   /* ---------- 5. Desktop widths ---------- */
   const dctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });

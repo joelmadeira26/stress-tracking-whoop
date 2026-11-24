@@ -92,7 +92,9 @@ export const SESSION_TYPES = {
     icon: 'chat',
     defaultMode: 'doing',
     clock: 'elapsed',
-    titleHint: 'Interview with Zinc',
+    titleHint: 'Weekly sync',
+    attendees: true,
+    phases: [{ key: 'meetingStart', button: 'Meeting starts now', label: 'Meeting starts' }],
     toggle: { key: 'speaking', button: "I'm speaking", label: 'Speaking', color: '#22d3ee' },
     tags: [
       { key: 'tough', label: 'Tough question', color: '#f87171' },

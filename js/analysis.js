@@ -204,6 +204,9 @@ export function tensionSeries(session, restingHr, { stepMs = 30 * SEC, windowMs 
 export function allBands(session, now) {
   const bands = (session.bands || []).map((b) => ({ ...b, end: b.end || now || sessionEnd(session) }));
   const p = session.phases || {};
+  if (p.meetingStart && p.meetingStart > session.startTs) {
+    bands.push({ key: 'baseline', label: 'Baseline', color: '#8b93a3', start: session.startTs, end: p.meetingStart });
+  }
   if (p.halftime) {
     bands.push({
       key: 'halftime',
@@ -221,6 +224,7 @@ export function phaseLines(session) {
   const p = session.phases || {};
   const lines = [];
   if (p.kickoff) lines.push({ t: p.kickoff, label: 'KO' });
+  if (p.meetingStart) lines.push({ t: p.meetingStart, label: 'START' });
   if (p.fulltime) lines.push({ t: p.fulltime, label: 'FT' });
   return lines;
 }
@@ -253,7 +257,13 @@ export function sessionStats(session, restingHr) {
     peakTension: null,
     peakTensionT: null,
   };
-  if (!samples.length) return stats;
+  if (!samples.length) {
+    if (session.manual) {
+      stats.avgHr = session.manual.avgHr;
+      stats.durationMs = (session.manual.durationMin || 0) * 60000;
+    }
+    return stats;
+  }
   let sum = 0;
   for (const s of samples) sum += s.hr;
   stats.avgHr = Math.round(sum / samples.length);
@@ -583,4 +593,123 @@ export function resolveCalibration(session) {
   session.delayMs = d;
   session.delayCalibrated = true;
   return d;
+}
+
+/* ---------------- Meeting stress (per meeting & per person) ---------------- */
+
+const median = (arr) => {
+  const a = arr.filter((x) => x != null).sort((x, y) => x - y);
+  if (!a.length) return null;
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+};
+
+/**
+ * How far your heart rate rose above your baseline in one meeting.
+ * Baseline = the minutes you recorded before tapping "Meeting starts now" (≥ 90 s),
+ * else your usual desk baseline from other meetings, else resting HR + 8.
+ */
+export function meetingStress(session, restingHr, deskBaseline = null) {
+  if (session.manual) {
+    const m = session.manual;
+    const base = m.baselineHr || deskBaseline || restingHr + 8;
+    return {
+      elevation: m.avgHr != null ? Math.round((m.avgHr - base) * 10) / 10 : null,
+      baseline: Math.round(base),
+      baselineSource: m.baselineHr ? 'entered' : deskBaseline ? 'usual' : 'estimated',
+      avgHr: m.avgHr,
+      peakHr: m.peakHr || null,
+      durationMin: m.durationMin || null,
+      manual: true,
+    };
+  }
+  const samples = session.samples || [];
+  const startM = (session.phases && session.phases.meetingStart) || session.startTs;
+  const endM = sessionEnd(session);
+  const pre = samples.filter((x) => x.t < startM && x.t >= startM - 10 * 60000);
+  const during = samples.filter((x) => x.t >= startM && x.t <= endM);
+  if (during.length < 30) return { elevation: null, baseline: null, baselineSource: null, avgHr: null, durationMin: Math.round((endM - startM) / 60000) };
+  const avg = (arr) => arr.reduce((a, x) => a + x.hr, 0) / arr.length;
+  let baseline;
+  let source;
+  if (pre.length >= 90) {
+    baseline = avg(pre);
+    source = 'measured';
+  } else if (deskBaseline) {
+    baseline = deskBaseline;
+    source = 'usual';
+  } else {
+    baseline = restingHr + 8;
+    source = 'estimated';
+  }
+  const avgHr = avg(during);
+  const b30 = bucketHr(during, startM, endM, 30000).filter((b) => b.avg != null);
+  return {
+    elevation: Math.round((avgHr - baseline) * 10) / 10,
+    baseline: Math.round(baseline),
+    baselineSource: source,
+    avgHr: Math.round(avgHr),
+    peakHr: b30.length ? Math.round(Math.max(...b30.map((b) => b.avg))) : null,
+    durationMin: Math.round((endM - startM) / 60000),
+    manual: false,
+  };
+}
+
+/** Your usual "sitting at work" baseline: median of measured meeting baselines. */
+export function deskBaseline(meetings, restingHr) {
+  const vals = meetings.map((m) => meetingStress(m, restingHr).baselineSource === 'measured' ? meetingStress(m, restingHr).baseline : null);
+  return median(vals);
+}
+
+/** Solve (A) x = b with Gaussian elimination (small, dense). */
+function solve(A, b) {
+  const n = b.length;
+  const M = A.map((row, i) => [...row, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]];
+    if (Math.abs(M[c][c]) < 1e-9) continue;
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return M.map((row, i) => (Math.abs(row[i]) < 1e-9 ? 0 : row[n] / row[i]));
+}
+
+/**
+ * Each person's marginal effect on your heart rate (bpm), like the "stress leaderboard":
+ * ridge regression of meeting elevation on who attended (+ an intercept), so people who
+ * often share meetings are separated. With few meetings it shrinks towards 0.
+ */
+export function peopleEffects(rows, lambda = 2) {
+  // rows: [{ elevation, attendees: [names] }]
+  const data = rows.filter((r) => r.elevation != null && r.attendees && r.attendees.length);
+  const names = [...new Set(data.flatMap((r) => r.attendees))];
+  if (!data.length || !names.length) return [];
+  const p = names.length + 1; // intercept first
+  const XtX = Array.from({ length: p }, () => new Array(p).fill(0));
+  const Xty = new Array(p).fill(0);
+  for (const r of data) {
+    const x = [1, ...names.map((n) => (r.attendees.includes(n) ? 1 : 0))];
+    for (let i = 0; i < p; i++) {
+      Xty[i] += x[i] * r.elevation;
+      for (let j = 0; j < p; j++) XtX[i][j] += x[i] * x[j];
+    }
+  }
+  for (let i = 1; i < p; i++) XtX[i][i] += lambda; // don't shrink the intercept
+  const beta = solve(XtX, Xty);
+  return names
+    .map((name, i) => {
+      const with_ = data.filter((r) => r.attendees.includes(name));
+      return {
+        name,
+        effect: Math.round(beta[i + 1] * 10) / 10,
+        meetings: with_.length,
+        avgElevation: Math.round((with_.reduce((a, r) => a + r.elevation, 0) / with_.length) * 10) / 10,
+      };
+    })
+    .sort((a, b) => b.effect - a.effect);
 }

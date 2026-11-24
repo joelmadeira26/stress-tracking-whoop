@@ -485,3 +485,133 @@ export function downloadBlob(blob, filename) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
+
+/* ---------------- Meeting stress board image ---------------- */
+
+const STRESS_COL = (e) => (e >= 10 ? '#f85149' : e >= 5 ? '#e3b341' : '#6fe0a0');
+
+/** ranked: [{title, date, elevation, attendees, durationMin}], people: [{name, effect, meetings}] */
+export async function renderMeetingBoard(ranked, people, { nameOf = (n) => n, scale = 2 } = {}) {
+  await ensureFonts();
+  const W = 760;
+  const pad = 20;
+  const inner = W - pad * 2;
+  const rows = ranked.slice(0, 14);
+  const ppl = people.slice(0, 10);
+  const rowH = 40;
+  const pRowH = 28;
+  const headH = 108;
+  const card1H = 56 + rows.length * rowH + 10;
+  const card2H = ppl.length ? 56 + ppl.length * pRowH + 14 : 0;
+  const footH = 64;
+  const H = headH + card1H + (card2H ? 16 + card2H : 0) + footH;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W * scale;
+  canvas.height = H * scale;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(scale, scale);
+  glowBackground(ctx, W, H);
+
+  // header
+  const dates = ranked.map((r) => r.date);
+  const fmt = (t) => new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  ctx.fillStyle = COLORS.muted;
+  ctx.font = `600 10.5px ${FONT_TEXT}`;
+  letter(ctx, 1.5);
+  ctx.fillText('MEETING STRESS', pad + 2, pad + 18);
+  letter(ctx, 0);
+  ctx.fillStyle = COLORS.text;
+  ctx.font = `700 32px ${FONT_NUM}`;
+  ctx.fillText('My heart rate in every meeting', pad, pad + 54);
+  ctx.fillStyle = COLORS.muted;
+  ctx.font = `400 12px ${FONT_TEXT}`;
+  ctx.fillText(`${dates.length ? `${fmt(Math.min(...dates))} – ${fmt(Math.max(...dates))} · ` : ''}${ranked.length} meetings · bpm above my baseline`, pad + 2, pad + 74);
+  drawMark(ctx, W - pad, pad + 14, 16);
+
+  // card 1: ranked meetings
+  let y = headH;
+  chartCard(ctx, pad, y, inner, card1H);
+  ctx.fillStyle = COLORS.text;
+  ctx.font = `600 10.5px ${FONT_TEXT}`;
+  letter(ctx, 1.4);
+  ctx.fillText('STRESS GRAPH · EVERY MEETING', pad + 16, y + 28);
+  letter(ctx, 0);
+  const maxAbs = Math.max(4, ...rows.map((r) => Math.abs(r.elevation)));
+  const labelW = 300;
+  const barX = pad + 16 + labelW;
+  const barW = inner - 32 - labelW - 56;
+  y += 50;
+  for (const r of rows) {
+    ctx.fillStyle = COLORS.text;
+    ctx.font = `600 13px ${FONT_TEXT}`;
+    ctx.fillText(fitText(ctx, r.title, labelW - 12), pad + 16, y + 14);
+    ctx.fillStyle = COLORS.muted;
+    ctx.font = `400 10.5px ${FONT_TEXT}`;
+    const who = (r.attendees || []).map(nameOf).join(', ');
+    ctx.fillText(fitText(ctx, `${fmt(r.date)}${who ? ' · ' + who : ''}`, labelW - 12), pad + 16, y + 29);
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(barX, y + 8, barW, 12, 6);
+    else ctx.rect(barX, y + 8, barW, 12);
+    ctx.fill();
+    const w = Math.max(4, (Math.abs(r.elevation) / maxAbs) * barW);
+    ctx.fillStyle = STRESS_COL(r.elevation);
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(barX, y + 8, w, 12, 6);
+    else ctx.rect(barX, y + 8, w, 12);
+    ctx.fill();
+    ctx.fillStyle = STRESS_COL(r.elevation);
+    ctx.font = `700 18px ${FONT_NUM}`;
+    ctx.textAlign = 'right';
+    ctx.fillText(`${r.elevation > 0 ? '+' : ''}${r.elevation}`, pad + inner - 16, y + 21);
+    ctx.textAlign = 'left';
+    y += rowH;
+  }
+
+  // card 2: people
+  if (card2H) {
+    y = headH + card1H + 16;
+    chartCard(ctx, pad, y, inner, card2H);
+    ctx.fillStyle = COLORS.text;
+    ctx.font = `600 10.5px ${FONT_TEXT}`;
+    letter(ctx, 1.4);
+    ctx.fillText('WHO RAISES MY HEART RATE · EXTRA BPM WHEN THEY ATTEND', pad + 16, y + 28);
+    letter(ctx, 0);
+    const maxEff = Math.max(2, ...ppl.map((p) => Math.abs(p.effect)));
+    const mid = pad + 16 + 200 + (inner - 32 - 200 - 120) / 2;
+    const half = (inner - 32 - 200 - 120) / 2;
+    y += 50;
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.beginPath();
+    ctx.moveTo(mid, y - 4);
+    ctx.lineTo(mid, y + ppl.length * pRowH - 6);
+    ctx.stroke();
+    ppl.forEach((p, i) => {
+      ctx.fillStyle = COLORS.muted;
+      ctx.font = `700 14px ${FONT_NUM}`;
+      ctx.fillText(String(i + 1), pad + 16, y + 14);
+      ctx.fillStyle = COLORS.text;
+      ctx.font = `600 13px ${FONT_TEXT}`;
+      ctx.fillText(fitText(ctx, nameOf(p.name), 170), pad + 40, y + 14);
+      const w = (Math.abs(p.effect) / maxEff) * half;
+      ctx.fillStyle = p.effect >= 0 ? '#f0883e' : '#58a6ff';
+      ctx.fillRect(p.effect >= 0 ? mid : mid - w, y + 4, Math.max(2, w), 12);
+      ctx.font = `700 16px ${FONT_NUM}`;
+      ctx.textAlign = 'right';
+      ctx.fillText(`${p.effect > 0 ? '+' : ''}${p.effect}`, pad + inner - 70, y + 15);
+      ctx.fillStyle = COLORS.muted;
+      ctx.font = `400 10.5px ${FONT_TEXT}`;
+      ctx.fillText(`${p.meetings} mtg${p.meetings > 1 ? 's' : ''}`, pad + inner - 16, y + 14);
+      ctx.textAlign = 'left';
+      y += pRowH;
+    });
+  }
+
+  // footer
+  ctx.fillStyle = COLORS.muted;
+  ctx.font = `400 10.5px ${FONT_TEXT}`;
+  const caveat = 'A higher heart rate is not proof a person causes stress: topic, deadlines, sleep, caffeine or presenting all play a part. Heart rate from WHOOP via Pulse.';
+  wrap(ctx, caveat, inner - 8, 2).forEach((ln, i) => ctx.fillText(ln, pad + 4, H - footH + 26 + i * 15));
+  return new Promise((resolve) => canvas.toBlob((b) => resolve(b), 'image/png'));
+}
