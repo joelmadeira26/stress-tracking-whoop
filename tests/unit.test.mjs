@@ -344,3 +344,52 @@ test('normalizeEspnEvent', () => {
   assert.equal(e.home.logo, 'x.png');
   assert.equal(e.away.id, '360');
 });
+
+/* ---------- Stream sync ---------- */
+import { parseMatchClock, calibrationRealTime, resolveCalibration } from '../js/analysis.js';
+
+test('parseMatchClock handles stream clock formats', () => {
+  assert.deepEqual(parseMatchClock('67:23'), { sec: 4043, period: 2, exact: true });
+  assert.deepEqual(parseMatchClock('12:05'), { sec: 725, period: 1, exact: true });
+  assert.deepEqual(parseMatchClock('45+2:10'), { sec: 2830, period: 1, exact: true });
+  assert.deepEqual(parseMatchClock('90+3:05'), { sec: 5585, period: 2, exact: true });
+  assert.equal(parseMatchClock("67'").sec, 4050);
+  assert.equal(parseMatchClock('12.30').sec, 750);
+  assert.equal(parseMatchClock('abc'), null);
+  assert.equal(parseMatchClock('5:70'), null);
+});
+
+test('football stream sync: typed clock → delay', () => {
+  const KO = Date.parse('2026-11-25T20:00:00Z');
+  const SH = KO + 62 * 60000;
+  const feed = { phases: { kickoff: KO, secondhalf: SH }, moments: [], bands: [] };
+  // stream showed 12:00 at KO + 12 min + 55 s → 55 s behind
+  const s = { feed, calib: { kind: 'clock', sec: 720, period: 1, at: KO + 12 * 60000 + 55000 } };
+  assert.equal(resolveCalibration(s), 55000);
+  assert.equal(s.delayCalibrated, true);
+  // second half: 67:30 shown at SH + 22:30 + 72 s
+  s.calib = { kind: 'clock', sec: 4050, period: 2, at: SH + (4050 - 2700) * 1000 + 72000 };
+  assert.equal(resolveCalibration(s), 72000);
+  // second half unknown yet → pending
+  const p = { feed: { phases: { kickoff: KO } }, calib: { kind: 'clock', sec: 4050, period: 2, at: SH } };
+  assert.equal(resolveCalibration(p), null);
+  assert.equal(p.calib.pending, true);
+});
+
+test('F1 stream sync by lap on real Las Vegas lap times, pending until data arrives', () => {
+  const f = parseOpenF1(fixture('f1-lasvegas-2026.json'), 'VERSTAPPEN');
+  assert.ok(f.lapStarts[23] > f.lapStarts[22]);
+  const s = { startTs: f.lightsOut - 10 * 60000, samples: [], tags: [], bands: [], delayMs: 60000,
+    calib: { kind: 'lap', lap: 23, at: f.lapStarts[23] + 48000 } };
+  s.feed = { moments: [], bands: [], phases: {} }; // live data not published yet
+  applyFeed(s, s.calib.at);
+  assert.equal(s.calib.pending, true);
+  assert.equal(s.delayMs, 60000);
+  s.feed = f; // published after the race
+  applyFeed(s, f.lapStarts[50]);
+  assert.equal(s.calib.pending, false);
+  assert.equal(s.delayMs, 48000);
+  assert.equal(calibrationRealTime({ kind: 'lap', lap: 1 }, f), f.lightsOut);
+  const lead = s.tags.find((g) => /^Lap 2:/.test(g.label));
+  assert.ok(lead && lead.t === f.moments.find((m) => /^Lap 2:/.test(m.label)).ft + 48000);
+});

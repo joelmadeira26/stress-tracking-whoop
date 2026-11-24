@@ -18,6 +18,8 @@ import {
   sessionEnd,
   applyFeed,
   legendCategories,
+  parseMatchClock,
+  MAX_DELAY_MS,
 } from './analysis.js';
 import { chartSvg, sparklineSvg } from './chart.js';
 import { generateWriteup } from './ai.js';
@@ -426,7 +428,7 @@ function watchSheet(ev) {
         : `<div class="field"><span class="muted small" style="display:block;margin:10px 0 6px;font-weight:500">Your team</span>
           <div class="seg" id="wMine"><button data-v="home">${esc(ev.home.short)}</button><button data-v="away">${esc(ev.away.short)}</button><button data-v="">Neither</button></div></div>`
     }
-    <p class="small muted">Moments (${isF1 ? 'lead changes, safety car, pit stops, result' : 'goals, red cards, VAR, woodwork'}) are added automatically from live data, about ${state.settings.delaySec} s after they happen to match your TV. You can start at any point, even mid-${isF1 ? 'race' : 'match'}.</p>
+    <p class="small muted">Moments (${isF1 ? 'lead changes, safety car, pit stops, result' : 'goals, red cards, VAR, woodwork'}) are added automatically from live data, ${state.settings.delaySec} s after they happen to match your stream. Tap <b>Sync stream</b> once you're watching to set your exact delay. You can start at any point, even mid-${isF1 ? 'race' : 'match'}.</p>
     ${state.strapStatus !== 'connected' && support.ok ? '<p class="small" style="color:#fbd38d">Strap not connected yet. You can connect it on the next screen.</p>' : ''}
     <div class="actions">
       <button class="btn primary" id="wGo" style="min-height:58px;font-size:17px">${icon('tv')} I'm watching, start</button>
@@ -663,7 +665,9 @@ async function pollFeed() {
     state.feedStatus = { ok: false, at: state.feedStatus.at, msg: e.status === 401 || e.status === 403 ? 'f1wait' : e.message };
   }
   if (state.live === s) {
+    const wasPending = s.calib && s.calib.pending;
     applyFeed(s);
+    if (wasPending && s.calib && !s.calib.pending) toast(`Stream synced: ${Math.round(s.delayMs / 1000)} s behind live`);
     refreshLive(true);
   }
 }
@@ -676,7 +680,8 @@ function feedStatusText() {
   if (fs.ok === null) return 'Connecting to live data…';
   if (!fs.ok) return `Live data unavailable (${fs.msg}). Retrying…`;
   const ago = Math.round((Date.now() - fs.at) / 1000);
-  return `Live data · updated ${ago}s ago · TV delay ${Math.round((s.delayMs ?? 0) / 1000)} s${s.delayCalibrated ? ' (synced)' : ''}`;
+  const pend = s.calib && s.calib.pending ? ' · stream sync saved, waiting for live data to place it' : '';
+  return `Live data · updated ${ago}s ago · stream delay ${Math.round((s.delayMs ?? 0) / 1000)} s${s.delayCalibrated ? ' (synced)' : ''}${pend}`;
 }
 
 /** The newest feed event that has already happened (in the feed) — used for "I just saw it". */
@@ -684,6 +689,74 @@ function calibrationCandidate(s, now) {
   if (!s.feed || !s.feed.moments) return null;
   const recent = s.feed.moments.filter((m) => m.ft <= now && now - m.ft < 4 * 60000 && m.cat !== 'finish');
   return recent.length ? recent[recent.length - 1] : null;
+}
+
+/* ----- stream sync: type the match clock or lap ----- */
+
+function applyCalibration(s, calib) {
+  s.calib = calib;
+  applyFeed(s);
+  if (s.calib.pending) {
+    toast(s.event.source === 'openf1' ? 'Saved. Applied as soon as lap times arrive.' : 'Saved. Applied as soon as live data has the kick-off times.');
+  } else {
+    const d = Math.round(s.delayMs / 1000);
+    toast(d >= MAX_DELAY_MS / 1000 ? 'That is over 10 min behind. Check the time you typed.' : d === 0 ? 'Synced: your stream looks live (0 s)' : `Synced: your stream is ${d} s behind live`);
+    state.settings.delaySec = d;
+    saveSettings(state.settings);
+  }
+  db.saveLive(s).catch(() => {});
+  refreshLive(true);
+}
+
+function syncSheet(s) {
+  const isF1 = s.event.source === 'openf1';
+  const laps = isF1 && s.feed && s.feed.lapStarts ? Object.keys(s.feed.lapStarts).map(Number) : [];
+  const maxLap = laps.length ? Math.max(...laps) : 0;
+  const m = showModal(
+    isF1
+      ? `<h2>Sync with your stream</h2>
+        <p class="muted small">Type the <b>next lap</b> number, then tap <b>Sync now</b> the moment your stream's lap counter changes to it.</p>
+        <div class="syncin"><span class="pre">LAP</span><input type="number" id="syVal" inputmode="numeric" min="1" max="99" placeholder="${maxLap ? maxLap + 1 : 12}" /></div>
+        <div class="actions">
+          <button class="btn primary" id="syGo" style="min-height:62px;font-size:18px">Sync now</button>
+          <button class="btn" data-q="lo">Lights out, right now</button>
+          <button class="btn ghost" id="syCancel">Cancel</button>
+        </div>`
+      : `<h2>Sync with your stream</h2>
+        <p class="muted small">Type a match clock a few seconds <b>ahead</b> of your stream (e.g. <b>67:30</b>), then tap <b>Sync now</b> the moment your stream's clock shows it. Stoppage time: <b>45+2:10</b> or <b>90+3:05</b>.</p>
+        <div class="syncin"><input type="text" id="syVal" inputmode="decimal" placeholder="67:30" autocomplete="off" /></div>
+        <div class="actions">
+          <button class="btn primary" id="syGo" style="min-height:62px;font-size:18px">Sync now</button>
+          <div class="row2"><button class="btn" data-q="ko">Kick-off now</button><button class="btn" data-q="sh">2nd half now</button></div>
+          <button class="btn ghost" id="syCancel">Cancel</button>
+        </div>`,
+  );
+  const input = $('#syVal', m);
+  setTimeout(() => input.focus(), 50);
+  $('#syCancel', m).addEventListener('click', hideModal);
+  $('#syGo', m).addEventListener('click', () => {
+    const at = Date.now();
+    if (isF1) {
+      const lap = parseInt(input.value, 10);
+      if (!(lap >= 1 && lap <= 99)) return toast('Type a lap number');
+      hideModal();
+      applyCalibration(s, { kind: 'lap', lap, at });
+    } else {
+      const c = parseMatchClock(input.value);
+      if (!c) return toast('Type the clock like 67:30');
+      hideModal();
+      applyCalibration(s, { kind: 'clock', sec: c.sec, period: c.period, at, input: input.value.trim() });
+    }
+  });
+  $$('[data-q]', m).forEach((b) =>
+    b.addEventListener('click', () => {
+      const at = Date.now();
+      const q = b.dataset.q;
+      hideModal();
+      if (q === 'lo') applyCalibration(s, { kind: 'lap', lap: 1, at });
+      else applyCalibration(s, { kind: 'clock', sec: q === 'ko' ? 0 : 2700, period: q === 'ko' ? 1 : 2, at, input: q === 'ko' ? '0:00' : '45:00' });
+    }),
+  );
 }
 
 function renderLive() {
@@ -732,7 +805,7 @@ function renderLive() {
     </div>
     <div class="chart-card tight"><div class="cc-head"><div class="cc-key"><span><i style="background:${COLORS.hr}"></i>HEART RATE</span><span><i style="background:${COLORS.stressLow}"></i>STRESS</span></div></div>
       <div class="chartbox" id="liveChart"></div></div>
-    ${linked ? `<p class="feedline" id="feedLine"></p><div id="calib"></div>` : ''}
+    ${linked ? `<div class="syncrow"><p class="feedline" id="feedLine"></p><button class="btn small" id="syncBtn">${icon('tv')} Sync stream</button></div><div id="calib"></div>` : ''}
     ${
       !linked
         ? `<div class="ctrl">
@@ -755,6 +828,7 @@ function renderLive() {
   $('#livePill').addEventListener('click', () => {
     if (state.strapStatus !== 'connected') connectStrap(false);
   });
+  if ($('#syncBtn')) $('#syncBtn').addEventListener('click', () => syncSheet(s));
   $$('[data-tag]').forEach((b) =>
     b.addEventListener('click', () => {
       const def = type.tags.find((d) => d.key === b.dataset.tag);
@@ -916,19 +990,20 @@ function refreshLive(withChart) {
     if (cal.dataset.k !== key) {
       cal.dataset.k = key;
       cal.innerHTML = cand
-        ? `<div class="calib"><div><div class="small muted">Latest from live data</div><div class="calib-l">${esc(cand.label)}</div></div>
+        ? `<div class="calib"><div><div class="small muted">Latest from live data. Tap when your stream shows it</div><div class="calib-l">${esc(cand.label)}</div></div>
           <button class="btn small" id="calBtn">Just saw it</button></div>`
         : '';
       const b = $('#calBtn');
       if (b)
         b.addEventListener('click', () => {
-          const d = Math.max(0, Math.min(180000, Date.now() - cand.ft));
+          const d = Math.max(0, Math.min(MAX_DELAY_MS, Date.now() - cand.ft));
+          s.calib = null;
           s.delayMs = d;
           s.delayCalibrated = true;
           state.settings.delaySec = Math.round(d / 1000);
           saveSettings(state.settings);
           applyFeed(s);
-          toast(`Synced to your TV: ${Math.round(d / 1000)} s behind live`);
+          toast(`Synced: your stream is ${Math.round(d / 1000)} s behind live`);
           db.saveLive(s).catch(() => {});
           cal.dataset.k = '';
           cal.innerHTML = '';
@@ -1114,13 +1189,13 @@ async function renderSession(id) {
     <div class="story">${esc(storyLine(s))}</div>
     <div class="catkey">${cats.map((c) => `<span><i style="background:${c.color}"></i>${esc(c.label)}</span>`).join('')}</div>
     <ol class="mlist two">${momentsListHtml(s)}</ol>
-    <p class="note-estimate">${STRESS_NOTE}${linked ? ' Times marked ~ are estimated from live data plus your TV delay.' : ''}</p>
+    <p class="note-estimate">${STRESS_NOTE}${linked ? ' Times marked ~ are estimated from live data plus your stream delay.' : ''}</p>
     ${
       linked
-        ? `<div class="card tight delaycard"><div class="grow"><div class="small muted">TV delay</div><div class="num" style="font-size:22px;font-weight:700">${Math.round(
+        ? `<div class="card tight delaycard"><div class="grow"><div class="small muted">Stream delay${s.calib && !s.calib.pending ? ' (synced)' : ''}</div><div class="num" style="font-size:22px;font-weight:700">${Math.round(
             (s.delayMs ?? 0) / 1000,
           )} s</div></div>
-          <button class="btn small" data-delay="-10">−10 s</button><button class="btn small" data-delay="10">+10 s</button>
+          <button class="btn small" data-delay="-60">−1 min</button><button class="btn small" data-delay="-10">−10 s</button><button class="btn small" data-delay="10">+10 s</button><button class="btn small" data-delay="60">+1 min</button>
           ${s.event.id !== 'demo' ? '<button class="btn small" id="dSync">Update moments</button>' : ''}</div>`
         : ''
     }
@@ -1164,8 +1239,9 @@ async function renderSession(id) {
     });
     $$('[data-delay]').forEach((b) =>
       b.addEventListener('click', async () => {
-        s.delayMs = Math.max(0, Math.min(300000, (s.delayMs ?? 0) + Number(b.dataset.delay) * 1000));
+        s.delayMs = Math.max(0, Math.min(MAX_DELAY_MS, (s.delayMs ?? 0) + Number(b.dataset.delay) * 1000));
         s.delayCalibrated = true;
+        s.calib = null;
         applyFeed(s, s.endTs);
         await db.saveSession(s);
         draw();
@@ -1472,9 +1548,9 @@ function renderSettings() {
       <label class="field"><span>Resting heart rate (copy it from WHOOP)</span>
         <input type="number" id="sRest" min="30" max="120" inputmode="numeric" value="${esc(st.restingHr)}"/></label>
       <p class="small muted" style="margin:-6px 0 14px">Used for stress and your "calm" zone (resting + 15 bpm).</p>
-      <label class="field"><span>TV / stream delay (seconds)</span>
-        <input type="number" id="sDelay" min="0" max="180" inputmode="numeric" value="${esc(st.delaySec)}"/></label>
-      <p class="small muted" style="margin:-6px 0 0">How far your TV is behind live data. Tap "Just saw it" during a game and Pulse sets this for you.</p>
+      <label class="field"><span>Stream delay (seconds)</span>
+        <input type="number" id="sDelay" min="0" max="600" inputmode="numeric" value="${esc(st.delaySec)}"/></label>
+      <p class="small muted" style="margin:-6px 0 0">How far your stream is behind live data (usually 30–90 s). During a game, tap <b>Sync stream</b> and type the match clock or lap. Pulse measures it and remembers it for next time.</p>
     </div>
     <div class="card">
       <h3 style="margin-bottom:10px">AI write-up</h3>
@@ -1515,7 +1591,7 @@ function renderSettings() {
     const rest = parseInt($('#sRest').value, 10);
     const delay = parseInt($('#sDelay').value, 10);
     if (!(rest >= 30 && rest <= 120)) return toast('Resting HR should be between 30 and 120');
-    if (!(delay >= 0 && delay <= 180)) return toast('Delay should be between 0 and 180 seconds');
+    if (!(delay >= 0 && delay <= 600)) return toast('Delay should be between 0 and 600 seconds');
     state.settings = {
       ...state.settings,
       restingHr: rest,

@@ -339,3 +339,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--hr); }
 .ti-img { width: 30px; height: 30px; object-fit: contain; }
 .hist .ti { background: rgba(255, 255, 255, 0.05); }
 .writeup p:first-child { font-size: 21px; }
+
+.syncrow { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.syncrow .feedline { flex: 1; margin: 0; }
+.syncrow .btn { flex: none; }
+.syncin { display: flex; align-items: center; gap: 10px; margin: 14px 0 4px; }
+.syncin .pre { font-family: var(--num); font-size: 28px; font-weight: 700; color: var(--muted); }
+.syncin input { font-family: var(--num); font-size: 40px; font-weight: 700; text-align: center; min-height: 72px; letter-spacing: 0.04em; }

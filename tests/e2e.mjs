@@ -248,9 +248,28 @@ try {
   check('"Just saw it" offered', (await lp.locator('#calBtn').count()) === 1);
   await lp.clock.runFor(9000); // the TV shows it ~30 s after the feed
   await lp.click('#calBtn');
-  check('delay calibrated to ~30 s', /TV delay 30 s \(synced\)/.test(await lp.locator('#feedLine').innerText()));
+  check('delay calibrated to ~30 s', /stream delay 30 s \(synced\)/.test(await lp.locator('#feedLine').innerText()));
   check('goal appears with exact time', (await lp.locator('#liveMoments li .l').first().innerText()).startsWith("35' Goal Man United (1–1)"));
   check('score 1–1', (await lp.locator('#liveScore').innerText()) === '1–1');
+  // Stream sync by typing the match clock: stream is 75 s behind → shows (now − 75 s − kick-off)
+  const nowMs = await lp.evaluate(() => Date.now());
+  const shown = Math.floor((nowMs + 5000 - 75000 - T0) / 1000); // typed 5 s ahead of the stream
+  const typed = `${Math.floor(shown / 60)}:${String(shown % 60).padStart(2, '0')}`;
+  await lp.click('#syncBtn');
+  await lp.fill('#syVal', typed);
+  await lp.clock.runFor(5000); // ...and tap Sync when the stream reaches it
+  await lp.click('#syGo');
+  const d = await lp.evaluate(() => window.__pulse.state.live.delayMs);
+  check(`typed clock ${typed} → stream delay ≈75 s (${d} ms)`, d >= 75000 && d < 76000 && /stream delay 7[56] s \(synced\)/.test(await lp.locator('#feedLine').innerText()));
+  check('goal hidden again until it reaches the (later) stream', (await lp.evaluate(() => window.__pulse.state.live.tags.filter((g) => g.auto).length)) === 0);
+  await lp.clock.runFor(50000);
+  check('goal re-appears at feed time + new delay', (await lp.evaluate(() => window.__pulse.state.live.tags.find((g) => g.auto).t)) === feed.goals[1].at + d);
+  check('sync remembered as default', Math.abs((await lp.evaluate(() => JSON.parse(localStorage.getItem('pulse.settings')).delaySec)) - 75) <= 1);
+  await lp.click('#syncBtn');
+  await lp.fill('#syVal', '9x');
+  await lp.click('#syGo');
+  check('bad clock rejected, modal stays', (await lp.locator('#syVal').count()) === 1);
+  await lp.click('#syCancel');
   await lp.clock.runFor(60000);
   await lp.evaluate(() => (window.__fakeHR.hr = 84));
   await lp.click('[data-react="Furious"]');
@@ -258,8 +277,14 @@ try {
   await lp.clock.runFor(10 * 60000);
   feed.halftime = await lp.evaluate(() => Date.now());
   await lp.clock.runFor(60000);
+  check('half-time not shown before it reaches the stream', (await lp.locator('#liveClock').innerText()) !== 'HT');
+  await lp.clock.runFor(30000);
   check('half-time from live data', (await lp.locator('#liveClock').innerText()) === 'HT');
   await lp.screenshot({ path: 'tests/screens/08-live-linked-phone.png', fullPage: true });
+  await lp.click('#syncBtn');
+  await lp.fill('#syVal', '47:30');
+  await lp.screenshot({ path: 'tests/screens/08b-sync-sheet.png' });
+  await lp.click('#syCancel');
 
   // reload → resume
   await lp.clock.runFor(6000);

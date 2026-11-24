@@ -386,6 +386,7 @@ export function categoryLabels(session) {
 export function applyFeed(session, now = Date.now()) {
   const f = session.feed;
   if (!f) return session;
+  if (session.calib) resolveCalibration(session);
   const d = session.delayMs ?? 40000;
   const startT = session.startTs;
   const endT = session.endTs || now;
@@ -437,4 +438,62 @@ export function legendCategories(session) {
     if (b.key === 'sc' && !out.some((o) => o.label === 'Safety car')) out.push({ label: 'Safety car', color: b.color });
   }
   return out;
+}
+
+/* ---------------- Stream sync (calibration) ---------------- */
+
+export const MAX_DELAY_MS = 10 * 60 * 1000;
+
+/**
+ * Parse a football match clock as shown on a stream:
+ * "67:23", "67", "67'", "45+2", "45+2:10", "90+3:05", "12.30".
+ * Returns { sec, period } (sec = match seconds since kick-off of the match, 45:00 = 2700) or null.
+ */
+export function parseMatchClock(input) {
+  const str = String(input || '').trim().replace(/['’]/g, '').replace(/\s+/g, '').replace('.', ':');
+  let m = str.match(/^(45|90|105|120)\+(\d{1,2})(?::(\d{1,2}))?$/);
+  if (m) {
+    const base = Number(m[1]);
+    const sec = base * 60 + Number(m[2]) * 60 + (m[3] != null ? Number(m[3]) : 30);
+    return { sec, period: base === 45 ? 1 : 2, exact: m[3] != null };
+  }
+  m = str.match(/^(\d{1,3})(?::(\d{1,2}))?$/);
+  if (!m) return null;
+  const min = Number(m[1]);
+  const s = m[2] != null ? Number(m[2]) : 30;
+  if (s > 59 || min > 130) return null;
+  const sec = min * 60 + s;
+  return { sec, period: sec < 2700 ? 1 : 2, exact: m[2] != null };
+}
+
+/** Real-world time (ms) of a calibration point, from the feed — or null if the feed can't place it yet. */
+export function calibrationRealTime(calib, feed) {
+  if (!calib || !feed) return null;
+  const ph = feed.phases || {};
+  if (calib.kind === 'clock') {
+    if (calib.period === 2) return ph.secondhalf ? ph.secondhalf + (calib.sec - 2700) * 1000 : null;
+    return ph.kickoff ? ph.kickoff + calib.sec * 1000 : null;
+  }
+  if (calib.kind === 'lap') {
+    if (calib.lap === 1 && feed.lightsOut) return feed.lightsOut;
+    return (feed.lapStarts && feed.lapStarts[calib.lap]) || null;
+  }
+  return null;
+}
+
+/** Apply a pending stream calibration. Returns the delay in ms, or null while waiting for data. */
+export function resolveCalibration(session) {
+  const c = session.calib;
+  if (!c || !session.feed) return null;
+  const real = calibrationRealTime(c, session.feed);
+  if (real == null) {
+    c.pending = true;
+    return null;
+  }
+  const d = Math.max(0, Math.min(MAX_DELAY_MS, c.at - real));
+  c.pending = false;
+  c.delayMs = d;
+  session.delayMs = d;
+  session.delayCalibrated = true;
+  return d;
 }

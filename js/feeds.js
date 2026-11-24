@@ -540,6 +540,10 @@ export function parseOpenF1(data, myLast, now = Date.now()) {
     moments.push({ fid: 'finish', ft: finishT, est: false, cat: 'finish', label });
   }
 
+  // When each lap started (your driver's timing line) — used for stream sync by lap number.
+  const lapStarts = {};
+  for (const l of laps) lapStarts[l.lap_number] = t(l.date_start);
+
   const maxLap = rc.reduce((a, m) => Math.max(a, m.lap_number || 0), 0);
   const state = finishT ? 'post' : lightsOut ? 'in' : 'pre';
   moments.sort((a, b) => a.ft - b.ft);
@@ -548,6 +552,8 @@ export function parseOpenF1(data, myLast, now = Date.now()) {
     moments,
     bands,
     phases: {},
+    lapStarts,
+    lightsOut,
     myDriver: myName ? { name: myName, full: titleName(me.full_name), number: myNum, won: result && result.position === 1, leadInvolved: myLeadInvolved } : null,
     result,
   };

@@ -11,7 +11,10 @@ Pulse records your live heart rate from a WHOOP strap (via **Heart Rate Broadcas
 - **Home** lists what's live now and coming up in the next 9 days. Tap **Watch** at any time.
 - **Football (ESPN live data)**: goals with the running score and scorer, red cards, missed or saved penalties, VAR decisions, shots off the woodwork, kick-off, half-time and full time, all with their real-world times.
 - **F1 (OpenF1)**: lights out, lead changes (grouped, e.g. "Laps 10 to 18: lead swaps back and forth between Max and Russell"), your driver's pit stops, safety car / VSC / red-flag bands, and the result. OpenF1 may publish timing only after the race; Pulse then fills in the moments when you save or open the session.
-- **TV delay**: TV and streams run 30–60 s behind live data. Moments appear when they'd be on your screen (default 40 s). Tap **Just saw it** once and Pulse calibrates your exact delay. On a saved session you can nudge it ±10 s.
+- **Stream delay & sync**: streams run 30–90 s (sometimes minutes) behind live data. Moments appear when they'd be on your screen (default 60 s). During a session tap **Sync stream**:
+  - Football: type the match clock a few seconds ahead of your stream (e.g. `67:30`, `45+2:10`, `90+3:05`) and tap **Sync now** when your stream shows it. Or use **Kick-off now** / **2nd half now**.
+  - F1: type the next lap number and tap **Sync now** when your stream's lap counter changes. Or use **Lights out, right now**. If F1 timing is only published after the race, the sync is saved and applied automatically when it arrives.
+  - **Just saw it** on the latest moment works too. Your last sync becomes the default for next time; on a saved session you can nudge ±10 s / ±1 min.
 - **Your reactions** (So nervous, Big chance!, Celebrating, Furious, Can't watch, or free text) are tagged with the match minute.
 - Sources: ESPN's public site API and OpenF1 (unofficial, not associated with Formula 1). Both are called straight from your phone; no server.
 
@@ -81,6 +84,6 @@ No build step. Serve the folder over HTTP, for example with `python3 -m http.ser
 npm run test:unit   # HR parser, stress, match clock, chart, mocked AI, and feed parsers on
                     # real recorded data (Las Vegas GP 2026, Liverpool 4–0 Man Utd)
 npm run test:e2e    # headless Chromium: fake strap + fake live feeds: join a live match mid-way,
-                    # auto goal after TV delay, 'Just saw it' sync, reconnect,
+                    # auto goal after stream delay, typed-clock sync, 'Just saw it', reconnect,
                     # resume after reload, end screen, mocked AI, PNG export + share, 360 px & desktop
 ```

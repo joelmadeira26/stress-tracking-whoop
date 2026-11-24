@@ -125,7 +125,7 @@ export const DEFAULT_SETTINGS = {
   restingHr: 60,
   apiKey: '',
   model: 'claude-sonnet-5-5',
-  delaySec: 40, // TV/stream delay behind the live data feed
+  delaySec: 60, // stream delay behind the live data feed (streams are usually 30–90 s behind)
 };
 
 /* ---------------- Following ---------------- */
