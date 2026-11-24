@@ -60,6 +60,19 @@ Notes:
 - Google sign-ins last an hour. When one expires, Pulse asks you to tap **Connect** again.
 - On a company Google Workspace account, your admin may need to allow the app.
 
+## Costs: everything is free except the AI
+| Service | Used for | Cost |
+|---|---|---|
+| ESPN public data | football fixtures, live scores, match events | free, no key |
+| API-Football free tier | backup live scores when ESPN is down | free key; Pulse calls it at most once a minute and 90 times a day (limit is 100) |
+| OpenF1 free data | F1 schedule, lead changes, safety car, results | free, no key; moments fill in after the race |
+| Google Calendar API | your meetings | free |
+| Cloudflare Worker (WHOOP relay) | WHOOP recovery, sleep, HRV | free plan |
+| GitHub Pages | hosting the app | free |
+| **Anthropic API** | AI analysis and captions | **paid per use**: Haiku 5.5 ≈ 0.1–0.2¢, Sonnet 5.5 ≈ 1–2¢, Opus 5.5 ≈ 2–4¢ per analysis |
+
+To keep AI costs down, pick **Haiku 5.5** and **Quick** depth in Settings, or turn off **Analyse automatically** and only analyse the sessions you want to share.
+
 ## Settings (everything can be changed or switched off)
 Settings save automatically and are grouped as follows:
 - **You:** resting heart rate, and a personal stress scale that adapts to your own heart-rate range after 8+ recordings.
@@ -69,8 +82,7 @@ Settings save automatically and are grouped as follows:
   - stream delay;
   - big chances on/off;
   - calendar reminder lead time;
-  - backup live scores (API-Football key);
-  - OpenF1 account for real-time F1.
+  - backup live scores (API-Football free tier, capped at 90 calls a day).
 - **Google Calendar:** client ID, connect, keep in sync.
 - **WHOOP account (official API):** relay URL, connect, sync now, resting HR updated daily. See [relay/README.md](relay/README.md).
 - **Meetings:**

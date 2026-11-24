@@ -1,5 +1,5 @@
 // Pulse — UI, routing and live-session logic.
-import { SESSION_TYPES, typeOf, FREE_TAG, ICONS, COLORS, CATEGORIES, REACTIONS, COMPETITIONS, DEFAULT_FOLLOW, TEAM_SEARCH_LEAGUES } from './config.js';
+import { AI_MODELS, SESSION_TYPES, typeOf, FREE_TAG, ICONS, COLORS, CATEGORIES, REACTIONS, COMPETITIONS, DEFAULT_FOLLOW, TEAM_SEARCH_LEAGUES } from './config.js';
 import { Strap, bluetoothSupport } from './ble.js';
 import { SampleAggregator } from './hr.js';
 import { db, loadSettings, saveSettings, loadFollow, saveFollow, uid } from './db.js';
@@ -34,7 +34,7 @@ import { chartSvg, sparklineSvg } from './chart.js';
 import { generateWriteup } from './ai.js';
 import { renderMeetingBoard, renderShareImage, SHARE_FORMATS, buildCaption, shareOrDownload, downloadBlob, exportFileName, chartHeading, storyLine } from './export.js';
 import { DEMOS, demoMeetingWeek } from './demo.js';
-import { loadFixtures, syncEvent, searchableTeams, currentDrivers, configureFeeds, backupLiveScore } from './feeds.js';
+import { loadFixtures, syncEvent, searchableTeams, currentDrivers, configureFeeds, backupLiveScore, apiFootballUsage, AF_DAILY_CAP } from './feeds.js';
 import * as whoop from './whoop.js';
 import { hashPin, checkPin, isUnlocked, markUnlocked, biometricAvailable, registerBiometric, verifyBiometric } from './lock.js';
 import { buildIcs, fixtureToEvent } from './ics.js';
@@ -2176,7 +2176,7 @@ function applySettings() {
     meetBaselineMin: Number(st.meetBaselineMin) || 90,
     meetMinCoverage: (Number(st.meetMinCoverage) || 50) / 100,
   });
-  configureFeeds({ bigChances: !!st.featBigChances, apiFootballKey: st.apiFootballKey || '', openf1User: st.openf1User || '', openf1Pass: st.openf1Pass || '' });
+  configureFeeds({ bigChances: !!st.featBigChances, apiFootballKey: st.apiFootballKey || '' });
   const sys = typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   const theme = st.theme === 'system' ? sys : st.theme || 'dark';
   document.documentElement.dataset.theme = theme;
@@ -2513,9 +2513,8 @@ function renderSettings() {
       tog('featBigChances', 'Big chances', 'Add close-range shots and woodwork as moments'),
       num('reminderMin', 'Reminder', 'How long before kick-off calendar reminders alert you', 0, 180, 'min'),
       `<div class="set-row"><div class="lbl"><b>Teams, competitions, drivers</b><span>${esc(state.follow.teams.length + ' teams · ' + state.follow.competitions.length + ' competitions · ' + state.follow.drivers.length + ' drivers')}</span></div><a class="btn small" href="#/following">Edit</a></div>`,
-      txt('apiFootballKey', 'Backup live scores (API-Football key)', 'Optional. Used only when ESPN is unavailable. Free key at dashboard.api-football.com.', 'Paste key', true),
-      txt('openf1User', 'OpenF1 account (real-time F1)', 'Optional. A paid OpenF1 account gives live race data; without it F1 moments fill in after the race.', 'Username'),
-      txt('openf1Pass', 'OpenF1 password', 'Stored only on this phone.', 'Password', true),
+      txt('apiFootballKey', 'Backup live scores (API-Football, free tier)', `Optional, free. Used only when ESPN is unavailable, at most once a minute and ${AF_DAILY_CAP} times a day so it never passes the free 100/day. Used today: ${apiFootballUsage()}. Free key at dashboard.api-football.com.`, 'Paste key', true),
+      `<div class="set-row"><div class="lbl"><b>F1 data</b><span>OpenF1 free data: moments fill in right after the race (live timing is a paid OpenF1 feature, not used).</span></div><span class="pill-status on">Free</span></div>`,
     ])}
     ${group('cal', 'Google Calendar', [
       txt('gcalClientId', 'Google OAuth client ID', 'Read-only, straight from Google to this phone.', '1234-abc.apps.googleusercontent.com'),
@@ -2539,7 +2538,8 @@ function renderSettings() {
     ])}
     ${group('spark', 'AI analysis', [
       txt('apiKey', 'Anthropic API key', 'Stored only on this phone, sent only to api.anthropic.com. About one US cent per analysis.', 'sk-ant-…', true),
-      txt('model', 'AI model', '', 'claude-sonnet-5-5'),
+      sel('model', 'AI model', [...AI_MODELS.map((m) => [m.id, m.label]), ...(AI_MODELS.some((m) => m.id === st.model) ? [] : [[st.model, st.model]])], 'The only thing Pulse costs. Charged to your Anthropic account.'),
+      sel('aiEffort', 'Analysis depth', [['low', 'Quick (cheapest)'], ['medium', 'Thorough (costs a bit more)']]),
       tog('featAutoAnalyse', 'Analyse automatically', 'Run the AI analysis when you save a session'),
     ])}
     ${group('star', 'Features', [
@@ -2558,7 +2558,7 @@ function renderSettings() {
       <label class="btn block" for="sImport">Restore from an export…</label><input type="file" id="sImport" accept="application/json,.json" hidden/>
       <button class="btn block" id="sOnboard">Run the setup guide again</button>
       <button class="btn danger block" id="sClear">Clear all data</button>
-      <p class="small muted" style="margin:4px 0 0">Everything lives on this phone (IndexedDB). Live football data: ESPN (backup: API-Football). F1: OpenF1 (unofficial, not associated with Formula 1).</p>
+      <p class="small muted" style="margin:4px 0 0">Everything lives on this phone (IndexedDB). Free data sources: ESPN (football), API-Football free tier (backup), OpenF1 free data (F1, unofficial, not associated with Formula 1), Google Calendar, WHOOP via your free Cloudflare relay. The only paid service is the Anthropic API for AI analysis.</p>
     </div></div>
     <p class="note-estimate">${STRESS_NOTE}</p>
     <p class="small muted">Pulse · <a href="https://github.com/joelmadeira26/stress-tracking-whoop">source</a></p>
@@ -2676,7 +2676,7 @@ function renderSettings() {
   });
   $('#sExport').addEventListener('click', async () => {
     const all = await db.allSessions();
-    const secret = ['apiKey', 'apiFootballKey', 'openf1Pass', 'lockPinHash', 'lockBioId'];
+    const secret = ['apiKey', 'apiFootballKey', 'lockPinHash', 'lockBioId'];
     const settings = Object.fromEntries(Object.entries(state.settings).filter(([k]) => !secret.includes(k)));
     downloadBlob(new Blob([JSON.stringify({ app: 'Pulse', version: 2, exportedAt: new Date().toISOString(), settings, follow: state.follow, sessions: all })], { type: 'application/json' }), `pulse-export-${new Date().toISOString().slice(0, 10)}.json`);
   });

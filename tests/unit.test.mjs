@@ -558,3 +558,29 @@ test('work day: meetings scored against ±90 min non-meeting baseline', () => {
   assert.ok(Math.abs(r[1].dbpm - 2) < 0.6);
   assert.equal(r[0].baseline, 70);
 });
+
+/* ---------- Free-tier guard (API-Football: 100 requests/day) ---------- */
+import { backupLiveScore, configureFeeds, apiFootballUsage, AF_DAILY_CAP } from '../js/feeds.js';
+
+test('API-Football backup: one shared call per minute, never above the daily cap', async () => {
+  const store = new Map();
+  globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
+  configureFeeds({ apiFootballKey: 'free-key' });
+  let calls = 0;
+  const fake = async () => {
+    calls++;
+    return new Response(JSON.stringify({ response: [{ teams: { home: { name: 'Sporting CP' }, away: { name: 'Manchester United' } }, goals: { home: 1, away: 0 }, fixture: { status: { short: '1H', elapsed: 20 } } }] }));
+  };
+  const ev = { source: 'espn', home: { name: 'Sporting CP' }, away: { name: 'Manchester United' } };
+  for (let i = 0; i < 5; i++) await backupLiveScore(ev, fake);
+  assert.equal(calls, 1, 'polls within a minute share one request');
+  assert.equal(apiFootballUsage(), 1);
+  store.set('pulse.af.usage', JSON.stringify({ day: new Date().toISOString().slice(0, 10), count: AF_DAILY_CAP }));
+  const before = calls;
+  // force the 1-minute cache to expire by switching keys
+  configureFeeds({ apiFootballKey: 'other-key' });
+  assert.equal(await backupLiveScore(ev, fake), null, 'stops at the daily cap');
+  assert.equal(calls, before);
+  configureFeeds({ apiFootballKey: '' });
+  delete globalThis.localStorage;
+});

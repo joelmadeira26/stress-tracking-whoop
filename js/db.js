@@ -57,6 +57,8 @@ export function loadSettings() {
     const saved = JSON.parse(raw || '{}');
     // people who used Pulse before onboarding existed skip it
     if (raw && saved.onboarded === undefined) saved.onboarded = true;
+    delete saved.openf1User; // paid OpenF1 option removed (free data only)
+    delete saved.openf1Pass;
     return { ...DEFAULT_SETTINGS, ...saved };
   } catch {
     return { ...DEFAULT_SETTINGS };

@@ -143,7 +143,7 @@ export function buildRequest(session, settings) {
     model,
     max_tokens: 8000,
     system: SYSTEM,
-    output_config: { effort: 'low', format: { type: 'json_schema', schema: RESPONSE_SCHEMA } },
+    output_config: { effort: settings.aiEffort || 'low', format: { type: 'json_schema', schema: RESPONSE_SCHEMA } },
     messages: [
       {
         role: 'user',

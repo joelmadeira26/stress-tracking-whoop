@@ -126,9 +126,7 @@ export const DEFAULT_SETTINGS = {
   // Live data
   delaySec: 60, // stream delay behind the live data feed (streams are usually 30–90 s behind)
   featBigChances: true,
-  apiFootballKey: '', // optional backup source for live scores
-  openf1User: '', // optional paid OpenF1 account for real-time F1 data
-  openf1Pass: '',
+  apiFootballKey: '', // optional free-tier key: backup source for live scores
   reminderMin: 15,
   // Calendar & WHOOP
   gcalClientId: '',
@@ -147,6 +145,7 @@ export const DEFAULT_SETTINGS = {
   apiKey: '',
   model: 'claude-sonnet-5-5',
   featAutoAnalyse: true,
+  aiEffort: 'low', // low keeps each analysis cheap
   // App
   featReactions: true,
   featWeekly: true,
@@ -217,3 +216,10 @@ export const ICONS = {
 export function typeOf(key) {
   return SESSION_TYPES[key] || { label: 'Session', short: 'Other', icon: 'heart', defaultMode: 'doing', clock: 'elapsed', titleHint: '', tags: [] };
 }
+
+/** AI models you can pick (prices per million tokens, Anthropic list prices). */
+export const AI_MODELS = [
+  { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5 · best captions · about 1–2¢ per analysis' },
+  { id: 'claude-haiku-5-5', label: 'Haiku 5.5 · cheapest · about 0.1–0.2¢ per analysis' },
+  { id: 'claude-opus-5-5', label: 'Opus 5.5 · most thorough · about 2–4¢ per analysis' },
+];

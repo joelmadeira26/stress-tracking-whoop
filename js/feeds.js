@@ -14,7 +14,7 @@ export class FeedError extends Error {
 }
 
 /** Options from Settings. */
-export const FEEDS = { bigChances: true, apiFootballKey: '', openf1User: '', openf1Pass: '' };
+export const FEEDS = { bigChances: true, apiFootballKey: '' };
 export function configureFeeds(opts) {
   Object.assign(FEEDS, opts);
 }
@@ -490,10 +490,44 @@ const sameTeam = (a, b) => {
   return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
 };
 
+/*
+ * API-Football free tier = 100 requests/day. Pulse keeps well inside it: at most one call a
+ * minute, at most AF_DAILY_CAP a day (counted on this phone, reset at midnight UTC like the API).
+ */
+export const AF_DAILY_CAP = 90;
+const AF_KEY = 'pulse.af.usage';
+let afLast = { at: 0, result: null, key: '' };
+export function apiFootballUsage() {
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    const u = JSON.parse(localStorage.getItem(AF_KEY) || 'null');
+    return u && u.day === today ? u.count : 0;
+  } catch {
+    return 0;
+  }
+}
+function countApiFootballCall() {
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    localStorage.setItem(AF_KEY, JSON.stringify({ day: today, count: apiFootballUsage() + 1 }));
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Live score/status for an ESPN event from API-Football, when ESPN is down. */
 export async function backupLiveScore(event, fetchImpl = fetch) {
   if (!FEEDS.apiFootballKey || event.source !== 'espn') return null;
-  const j = await getJSON('https://v3.football.api-sports.io/fixtures?live=all', { fetchImpl, headers: { 'x-apisports-key': FEEDS.apiFootballKey } });
+  // one shared call per minute covers every live game; never pass the free daily allowance
+  const fresh = Date.now() - afLast.at < 60000 && afLast.key === FEEDS.apiFootballKey;
+  if (!fresh && apiFootballUsage() >= AF_DAILY_CAP) return null;
+  const j = fresh
+    ? afLast.result
+    : await getJSON('https://v3.football.api-sports.io/fixtures?live=all', { fetchImpl, headers: { 'x-apisports-key': FEEDS.apiFootballKey } }).then((r) => {
+        countApiFootballCall();
+        afLast = { at: Date.now(), result: r, key: FEEDS.apiFootballKey };
+        return r;
+      });
   const names = (t) => [t.name, t.short].filter(Boolean);
   const fx = (j.response || []).find(
     (f) => names(event.home).some((n) => sameTeam(n, f.teams.home.name)) && names(event.away).some((n) => sameTeam(n, f.teams.away.name)),
@@ -505,23 +539,6 @@ export async function backupLiveScore(event, fetchImpl = fetch) {
     score: { home: fx.goals.home ?? 0, away: fx.goals.away ?? 0 },
     status: { state: done ? 'post' : 'in', detail: done ? 'FT' : st.short === 'HT' ? 'HT' : `${st.elapsed ?? ''}'${st.extra ? `+${st.extra}` : ''}`, completed: done },
   };
-}
-
-/* ---------------- OpenF1 paid account (real-time data) ---------------- */
-
-let of1Token = null;
-async function openf1Headers(fetchImpl = fetch) {
-  if (!FEEDS.openf1User || !FEEDS.openf1Pass) return undefined;
-  if (of1Token && of1Token.exp > Date.now() + 60000) return { Authorization: `Bearer ${of1Token.token}` };
-  const res = await fetchImpl('https://api.openf1.org/token', {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ username: FEEDS.openf1User, password: FEEDS.openf1Pass }).toString(),
-  });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok || !j.access_token) throw new FeedError('OpenF1 sign-in failed. Check your OpenF1 details in Settings.', res.status);
-  of1Token = { token: j.access_token, exp: Date.now() + (Number(j.expires_in) || 3600) * 1000 };
-  return { Authorization: `Bearer ${of1Token.token}` };
 }
 
 /* ================= F1 parsing ================= */
@@ -721,8 +738,7 @@ function titleCaseKind(k) {
 
 export async function syncF1(event, myLast, opts = {}) {
   const k = event.sessionKey;
-  const headers = await openf1Headers(opts.fetchImpl).catch(() => undefined);
-  const q = (ep, extra = '') => getJSON(`${OF1}/${ep}?session_key=${k}${extra}`, { ...opts, headers }).catch((e) => {
+  const q = (ep, extra = '') => getJSON(`${OF1}/${ep}?session_key=${k}${extra}`, opts).catch((e) => {
     if (e.status === 404) return [];
     throw e;
   });
