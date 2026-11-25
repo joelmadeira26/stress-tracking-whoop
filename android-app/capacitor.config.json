@@ -5,14 +5,27 @@
   "server": {
     "url": "https://joelmadeira26.github.io/stress-tracking-whoop/",
     "androidScheme": "https",
-    "errorPath": "offline.html"
+    "errorPath": "offline.html",
+    "allowNavigation": [
+      "*.workers.dev",
+      "*.whoop.com"
+    ]
   },
   "android": {
     "backgroundColor": "#0b0d12",
     "allowMixedContent": false
   },
   "plugins": {
-    "CapacitorHttp": { "enabled": true },
-    "BluetoothLe": { "displayStrings": { "scanning": "Looking for your WHOOP…", "cancel": "Cancel", "availableDevices": "Heart-rate devices", "noDeviceFound": "No strap found. Is Heart Rate Broadcast on?" } }
+    "CapacitorHttp": {
+      "enabled": true
+    },
+    "BluetoothLe": {
+      "displayStrings": {
+        "scanning": "Looking for your WHOOP\u2026",
+        "cancel": "Cancel",
+        "availableDevices": "Heart-rate devices",
+        "noDeviceFound": "No strap found. Is Heart Rate Broadcast on?"
+      }
+    }
   }
 }

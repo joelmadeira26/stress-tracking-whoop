@@ -147,9 +147,12 @@ podcast: {
 The Start button, live tag buttons, history filter and chart all pick it up automatically. For a demo, add a generator to `DEMOS` in `js/demo.js`.
 
 ## Android app
+Step-by-step setup: **[docs/CHECKLIST.md](docs/CHECKLIST.md)**.
+
 Pulse also comes as a native Android app. It's the same app, with three differences:
 - **Recording continues with the screen off.** A "Pulse is recording" notification shows while a session runs (Android foreground service, connected-device type).
 - **Bluetooth is native,** so you don't need Chrome's Web Bluetooth.
+- **WHOOP sign-in stays inside the app** (version 1.1 and later).
 - **It installs from the site:** Settings → Android app → *Download Pulse for Android*, or https://joelmadeira26.github.io/stress-tracking-whoop/download/pulse.apk.
 
 ### Install

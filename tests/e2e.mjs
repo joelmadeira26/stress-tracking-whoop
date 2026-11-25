@@ -705,6 +705,24 @@ try {
   await np.screenshot({ path: 'tests/screens/20-settings-in-app.png' });
   const appGroup = await np.evaluate(() => [...document.querySelectorAll('.set-group')].map((g) => g.innerText.slice(0, 80)).join(' | '));
   check("app: settings know it's the Android app", appGroup.includes("You're using the Pulse app"));
+  await np.setViewportSize({ width: 340, height: 760 });
+  await np.evaluate(() => (document.documentElement.style.fontSize = '130%')); // Android system font scale
+  await np.waitForTimeout(200);
+  const overlaps = await np.evaluate(() => {
+    const bad = [];
+    for (const row of document.querySelectorAll('.set-row:not(.stack)')) {
+      const lbl = row.querySelector(':scope > .lbl');
+      const rr = row.getBoundingClientRect();
+      for (const el of row.children) {
+        if (el === lbl) continue;
+        const r = el.getBoundingClientRect();
+        if (el.scrollWidth > el.clientWidth + 1 || r.right > rr.right + 1 || r.width < 8 || (lbl && lbl.getBoundingClientRect().right > r.left + 1)) bad.push((lbl ? lbl.innerText : '').split('\n')[0]);
+      }
+    }
+    return bad;
+  });
+  await np.evaluate(() => (document.documentElement.style.fontSize = ''));
+  check(`settings controls never overlap text or leave the card${overlaps.length ? ' (' + overlaps.join(', ') + ')' : ''}`, overlaps.length === 0);
   check('no sideways scrolling in settings', await np.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
   await np.screenshot({ path: 'tests/screens/19-settings-app.png', fullPage: true });
 
